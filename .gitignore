@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.env
+.venv/
+venv/
+data/backtest_cache/
+data/*.pkl
+data/*.json
+*.log
