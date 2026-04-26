@@ -4,14 +4,18 @@ import os
 from dataclasses import asdict
 from typing import Any, Callable
 
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .state import BotState, StateStore
 
 
-def create_app(state_store: StateStore, get_state: Callable[[], BotState]) -> FastAPI:
+def create_app(
+    state_store: StateStore,
+    get_state: Callable[[], BotState],
+    set_state: Callable[[BotState], None],
+) -> FastAPI:
     app = FastAPI(title="Instarding Bot", version="0.1.0")
 
     ui_dir = os.path.join(os.getcwd(), "ui")
@@ -45,8 +49,28 @@ def create_app(state_store: StateStore, get_state: Callable[[], BotState]) -> Fa
     @app.post("/api/state/reset")
     def api_reset() -> Any:
         st = BotState()
+        set_state(st)
         state_store.save(st)
         return {"ok": True}
+
+    @app.get("/api/state/export")
+    def api_state_export() -> Any:
+        st = get_state()
+        return state_store.to_dict(st)
+
+    @app.post("/api/state/import")
+    def api_state_import(payload: dict[str, Any] = Body(...)) -> Any:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Payload must be a JSON object")
+
+        try:
+            st = state_store.from_dict(payload)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid state payload: {exc}") from exc
+
+        set_state(st)
+        state_store.save(st)
+        return {"ok": True, "positions": len(st.positions), "trades": len(st.trades)}
 
     return app
 

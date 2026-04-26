@@ -20,7 +20,11 @@ def main() -> None:
     def get_state() -> BotState:
         return rt.state
 
-    app = create_app(state_store=state_store, get_state=get_state)
+    def set_state(st: BotState) -> None:
+        rt.state = st
+        rt.state_store = state_store
+
+    app = create_app(state_store=state_store, get_state=get_state, set_state=set_state)
 
     @app.on_event("startup")
     async def _startup() -> None:

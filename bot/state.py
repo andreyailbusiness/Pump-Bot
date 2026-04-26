@@ -62,7 +62,7 @@ class StateStore:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            return self._from_dict(raw)
+            return self.from_dict(raw)
         except FileNotFoundError:
             return BotState()
 
@@ -70,14 +70,14 @@ class StateStore:
         state.updated_at = _utcnow_iso()
         _safe_makedirs(self.path)
         with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(self._to_dict(state), f, ensure_ascii=False, indent=2)
+            json.dump(self.to_dict(state), f, ensure_ascii=False, indent=2)
 
-    def _to_dict(self, state: BotState) -> dict[str, Any]:
+    def to_dict(self, state: BotState) -> dict[str, Any]:
         d = asdict(state)
         d["positions"] = {k: asdict(v) for k, v in state.positions.items()}
         return d
 
-    def _from_dict(self, raw: dict[str, Any]) -> BotState:
+    def from_dict(self, raw: dict[str, Any]) -> BotState:
         st = BotState(
             equity=float(raw.get("equity", 1000.0)),
             start_equity=float(raw.get("start_equity", raw.get("equity", 1000.0))),

@@ -214,7 +214,7 @@ def build_runtime(settings: Settings) -> BotRuntime:
         client = MexcFuturesClient(base_url=settings.mexc_base_url)
     else:
         client = MexcClient(base_url=settings.mexc_base_url)
-    state_store = StateStore()
+    state_store = StateStore(path=settings.state_path)
     state = state_store.load()
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
 
