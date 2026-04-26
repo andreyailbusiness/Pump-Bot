@@ -15,7 +15,7 @@ def main() -> None:
     rt = build_runtime(settings)
 
     # Keep state in-memory for API reads; persist after each loop step.
-    state_store = StateStore()
+    state_store = StateStore(path=settings.state_path)
 
     def get_state() -> BotState:
         return rt.state

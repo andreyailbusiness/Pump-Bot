@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     market_type: str = Field(default="futures", alias="MARKET_TYPE")  # futures|spot
 
     top_symbols_limit: int = Field(default=150, alias="TOP_SYMBOLS_LIMIT")
+    state_path: str = Field(default="data/state.json", alias="STATE_PATH")
     top_symbols_cache_path: str = Field(default="data/top_symbols.json", alias="TOP_SYMBOLS_CACHE_PATH")
 
     timeframe: str = Field(default="1h", alias="TIMEFRAME")

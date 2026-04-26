@@ -15,6 +15,10 @@ services:
         value: futures
       - key: TOP_SYMBOLS_LIMIT
         value: "150"
+      - key: STATE_PATH
+        value: /var/data/state.json
+      - key: TOP_SYMBOLS_CACHE_PATH
+        value: /var/data/top_symbols.json
       - key: TIMEFRAME
         value: 1h
       - key: CANDLES_LIMIT
