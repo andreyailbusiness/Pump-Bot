@@ -19,6 +19,14 @@ services:
         value: /var/data/state.json
       - key: TOP_SYMBOLS_CACHE_PATH
         value: /var/data/top_symbols.json
+      - key: STATE_BACKUP_ENABLED
+        value: "true"
+      - key: STATE_BACKUP_INTERVAL_SEC
+        value: "900"
+      - key: STATE_BACKUP_DIR
+        value: /var/data/backups
+      - key: STATE_BACKUP_KEEP
+        value: "96"
       - key: TIMEFRAME
         value: 1h
       - key: CANDLES_LIMIT

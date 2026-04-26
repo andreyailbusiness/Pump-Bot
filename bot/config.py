@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     top_symbols_limit: int = Field(default=150, alias="TOP_SYMBOLS_LIMIT")
     state_path: str = Field(default="data/state.json", alias="STATE_PATH")
     top_symbols_cache_path: str = Field(default="data/top_symbols.json", alias="TOP_SYMBOLS_CACHE_PATH")
+    state_backup_enabled: bool = Field(default=True, alias="STATE_BACKUP_ENABLED")
+    state_backup_interval_sec: int = Field(default=900, alias="STATE_BACKUP_INTERVAL_SEC")
+    state_backup_dir: str = Field(default="data/backups", alias="STATE_BACKUP_DIR")
+    state_backup_keep: int = Field(default=96, alias="STATE_BACKUP_KEEP")
 
     timeframe: str = Field(default="1h", alias="TIMEFRAME")
     candles_limit: int = Field(default=300, alias="CANDLES_LIMIT")
