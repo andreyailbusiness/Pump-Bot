@@ -36,6 +36,54 @@ def _is_symbol_blocked(rt: BotRuntime, symbol: str) -> bool:
     return datetime.now(timezone.utc) < dt
 
 
+def _refresh_open_positions_last_price(rt: BotRuntime, symbols: Iterable[str]) -> None:
+    symbols = list(symbols)
+    if not symbols:
+        return
+    try:
+        if isinstance(rt.client, MexcFuturesClient):
+            ticker_rows = rt.client.contract_ticker()
+            price_map: dict[str, float] = {}
+            for row in ticker_rows:
+                sym = str(row.get("symbol", ""))
+                if not sym:
+                    continue
+                raw_price = row.get("lastPrice")
+                if raw_price is None:
+                    raw_price = row.get("fairPrice")
+                try:
+                    if raw_price is not None:
+                        price_map[sym] = float(raw_price)
+                except Exception:
+                    continue
+            for sym in symbols:
+                p = rt.state.positions.get(sym)
+                if p is None:
+                    continue
+                if sym in price_map:
+                    p.last_price = float(price_map[sym])
+        else:
+            ticker_rows = rt.client.ticker_24hr()  # type: ignore[union-attr]
+            price_map: dict[str, float] = {}
+            for row in ticker_rows:
+                sym = str(row.get("symbol", ""))
+                if not sym:
+                    continue
+                try:
+                    price_map[sym] = float(row.get("lastPrice"))
+                except Exception:
+                    continue
+            for sym in symbols:
+                p = rt.state.positions.get(sym)
+                if p is None:
+                    continue
+                spot_sym = sym.replace("_", "")
+                if spot_sym in price_map:
+                    p.last_price = float(price_map[spot_sym])
+    except Exception:
+        return
+
+
 @dataclass
 class BotRuntime:
     settings: Settings
@@ -176,6 +224,7 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
 async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
     if not symbols:
         return
+    _refresh_open_positions_last_price(rt, symbols)
 
     for sym in list(symbols):
         try:
