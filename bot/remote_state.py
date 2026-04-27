@@ -87,7 +87,26 @@ def push_state_to_github(settings: Settings, state_payload: dict[str, Any]) -> N
     put_resp.raise_for_status()
 
 
-def choose_newer_state(local_payload: dict[str, Any], remote_payload: dict[str, Any]) -> dict[str, Any]:
+def _is_default_empty_local(payload: dict[str, Any]) -> bool:
+    """
+    True when local state is still the default template (no activity).
+    On a fresh deploy there is no state file: we must not treat it as newer than GitHub.
+    """
+    positions = payload.get("positions") or {}
+    trades = payload.get("trades") or []
+    if positions or trades:
+        return False
+    eq = float(payload.get("equity", 1000.0))
+    se = float(payload.get("start_equity", 1000.0))
+    return abs(eq - se) < 1e-9
+
+
+def choose_newer_state(local_payload: dict[str, Any], remote_payload: dict[str, Any] | None) -> dict[str, Any]:
+    if not remote_payload:
+        return local_payload
+    if _is_default_empty_local(local_payload):
+        return remote_payload
+
     local_dt = _parse_iso(str(local_payload.get("updated_at") or ""))
     remote_dt = _parse_iso(str(remote_payload.get("updated_at") or ""))
     if local_dt is None and remote_dt is None:

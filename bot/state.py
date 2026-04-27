@@ -67,9 +67,19 @@ class StateStore:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 raw = json.load(f)
-            return self.from_dict(raw)
+            if not isinstance(raw, dict):
+                raw = {}
+            st = self.from_dict(raw)
+            return st
         except FileNotFoundError:
-            return BotState()
+            # Old timestamp must lose to GitHub on next deploy (see choose_newer_state).
+            st = BotState()
+            st.updated_at = "1970-01-01T00:00:00+00:00"
+            return st
+        except (OSError, json.JSONDecodeError):
+            st = BotState()
+            st.updated_at = "1970-01-01T00:00:00+00:00"
+            return st
 
     def save(self, state: BotState) -> None:
         state.updated_at = _utcnow_iso()

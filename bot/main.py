@@ -67,8 +67,8 @@ def main() -> None:
     settings = get_settings()
     rt = build_runtime(settings)
 
-    # Keep state in-memory for API reads; persist after each loop step.
-    state_store = StateStore(path=settings.state_path)
+    # Single StateStore instance (same as runner); avoids two writers / confusing reloads.
+    state_store = rt.state_store
 
     def get_state() -> BotState:
         return rt.state
@@ -90,12 +90,20 @@ def main() -> None:
             try:
                 local_payload = state_store.to_dict(rt.state)
                 remote_payload = await asyncio.to_thread(pull_state_from_github, settings)
-                if remote_payload:
-                    selected = choose_newer_state(local_payload, remote_payload)
-                    rt.state = state_store.from_dict(selected)
-                    state_store.save(rt.state)
-            except Exception:
-                pass
+                selected = choose_newer_state(local_payload, remote_payload)
+                rt.state = state_store.from_dict(selected)
+                state_store.save(rt.state)
+                print(
+                    f"[state] restore: positions={len(rt.state.positions)} "
+                    f"trades={len(rt.state.trades)} equity={rt.state.equity:.4f} "
+                    f"(github={'ok' if remote_payload else 'no-file'})",
+                    flush=True,
+                )
+                await asyncio.to_thread(
+                    push_state_to_github, settings, state_store.to_dict(rt.state)
+                )
+            except Exception as exc:
+                print(f"[state] GitHub sync failed (check GITHUB_STATE_TOKEN / repo path): {exc}", flush=True)
 
         asyncio.create_task(bot_loop(rt))
         if settings.state_backup_enabled:
