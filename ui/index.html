@@ -23,7 +23,7 @@
       .upnl-neg { color: #ff6b6b; }
       .warn { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); }
       .muted { opacity: 0.75; }
-      .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+      .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
       .kpi { padding: 10px; border-radius: 10px; border: 1px solid #1f2a44; background: #0b1530; }
       .kpi .label { font-size: 11px; opacity: 0.7; }
       .kpi .value { font-size: 16px; font-weight: 700; margin-top: 4px; }
@@ -52,6 +52,10 @@
           <div class="kpi">
             <div class="label">Max drawdown status</div>
             <div class="value" id="mdd">—</div>
+          </div>
+          <div class="kpi">
+            <div class="label">Unrealized PnL</div>
+            <div class="value" id="totalUpnl">—</div>
           </div>
         </div>
 
@@ -104,6 +108,12 @@
         const ddPct = (dd * 100).toFixed(2) + "%";
         el("dd").textContent = `drawdown: ${ddPct}`;
         el("mdd").innerHTML = dd >= 0.08 ? `<span class="pill warn">halted (>= 8%)</span>` : `<span class="pill long">ok</span>`;
+        const totalUpnl = Object.values(st.positions || {}).reduce((acc, p) => {
+          if (p && typeof p.upnl === "number") return acc + p.upnl;
+          return acc;
+        }, 0);
+        el("totalUpnl").textContent = fmtPnl(totalUpnl);
+        el("totalUpnl").className = `value ${totalUpnl >= 0 ? "upnl-pos" : "upnl-neg"}`;
 
         const posBody = el("positions");
         posBody.innerHTML = "";
