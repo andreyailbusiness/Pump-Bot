@@ -54,7 +54,7 @@ services:
       - key: RISK_PERCENT_WEAK
         value: "0.005"
       - key: MAX_DRAWDOWN
-        value: "0.08"
+        value: "1"
       - key: LEVERAGE
         value: "10"
       - key: ADX_THRESHOLD

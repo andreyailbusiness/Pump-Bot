@@ -23,6 +23,7 @@ def create_app(
     state_store: StateStore,
     get_state: Callable[[], BotState],
     set_state: Callable[[BotState], None],
+    max_drawdown_limit: float = 0.08,
 ) -> FastAPI:
     app = FastAPI(title="Instarding Bot", version="0.1.0")
 
@@ -52,6 +53,7 @@ def create_app(
             )
             out_positions[k] = p
         d["positions"] = out_positions
+        d["max_drawdown_limit"] = float(max_drawdown_limit)
         return d
 
     @app.get("/api/positions")

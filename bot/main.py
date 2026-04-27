@@ -77,7 +77,12 @@ def main() -> None:
         rt.state = st
         rt.state_store = state_store
 
-    app = create_app(state_store=state_store, get_state=get_state, set_state=set_state)
+    app = create_app(
+        state_store=state_store,
+        get_state=get_state,
+        set_state=set_state,
+        max_drawdown_limit=float(settings.max_drawdown),
+    )
 
     @app.on_event("startup")
     async def _startup() -> None:

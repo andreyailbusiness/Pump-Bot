@@ -50,7 +50,7 @@
             <div class="value" id="startEquity">—</div>
           </div>
           <div class="kpi">
-            <div class="label">Max drawdown status</div>
+            <div class="label">Лимит просадки</div>
             <div class="value" id="mdd">—</div>
           </div>
           <div class="kpi">
@@ -107,7 +107,17 @@
         const dd = (st.start_equity > 0) ? ((st.start_equity - st.equity) / st.start_equity) : 0;
         const ddPct = (dd * 100).toFixed(2) + "%";
         el("dd").textContent = `drawdown: ${ddPct}`;
-        el("mdd").innerHTML = dd >= 0.08 ? `<span class="pill warn">halted (>= 8%)</span>` : `<span class="pill long">ok</span>`;
+        const limitRaw = st.max_drawdown_limit;
+        const limit = (typeof limitRaw === "number" && !Number.isNaN(limitRaw)) ? limitRaw : 1;
+        if (limit >= 1 || limit <= 0) {
+          el("mdd").innerHTML = `<span class="pill long">выкл (тест)</span>`;
+        } else {
+          const limPct = (limit * 100).toFixed(0);
+          el("mdd").innerHTML =
+            dd >= limit
+              ? `<span class="pill warn">стоп новых входов (&gt;= ${limPct}%)</span>`
+              : `<span class="pill long">ок (&lt; ${limPct}%)</span>`;
+        }
         const totalUpnl = Object.values(st.positions || {}).reduce((acc, p) => {
           if (p && typeof p.upnl === "number") return acc + p.upnl;
           return acc;

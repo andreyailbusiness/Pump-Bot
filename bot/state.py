@@ -52,6 +52,9 @@ class BotState:
     def max_drawdown_reached(self, max_dd: float) -> bool:
         if self.start_equity <= 0:
             return False
+        # <=0: invalid/disabled; >=1: no halt (100% floor — tests / explicit off).
+        if max_dd <= 0 or max_dd >= 1.0:
+            return False
         dd = (self.start_equity - self.equity) / self.start_equity
         return dd >= max_dd
 
