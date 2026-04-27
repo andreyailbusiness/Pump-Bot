@@ -67,28 +67,28 @@ class OrderManager:
             }
         )
 
-    def update_position_paper(self, state: BotState, symbol: str, last_price: float, atr_value: float) -> None:
+    def update_position_paper(self, state: BotState, symbol: str, close_price: float, atr_value: float) -> None:
         pos = state.positions.get(symbol)
         if not pos:
             return
 
-        pos.last_price = last_price
+        # Do not set pos.last_price here: it is kept in sync with the exchange ticker for uPNL display.
 
-        # Trailing activation at +1.5*ATR profit
+        # Trailing activation at +1.5*ATR profit (uses last *closed* bar close for stability)
         if pos.side == "long":
-            profit = last_price - pos.entry_price
+            profit = close_price - pos.entry_price
             if (not pos.trailing_active) and profit >= self.risk.trail_activate_atr_mult * atr_value:
                 pos.trailing_active = True
-                pos.trailing_sl = max(pos.sl, last_price - self.risk.trail_dist_atr_mult * atr_value)
+                pos.trailing_sl = max(pos.sl, close_price - self.risk.trail_dist_atr_mult * atr_value)
             elif pos.trailing_active and pos.trailing_sl is not None:
-                pos.trailing_sl = max(pos.trailing_sl, last_price - self.risk.trail_dist_atr_mult * atr_value)
+                pos.trailing_sl = max(pos.trailing_sl, close_price - self.risk.trail_dist_atr_mult * atr_value)
         else:
-            profit = pos.entry_price - last_price
+            profit = pos.entry_price - close_price
             if (not pos.trailing_active) and profit >= self.risk.trail_activate_atr_mult * atr_value:
                 pos.trailing_active = True
-                pos.trailing_sl = min(pos.sl, last_price + self.risk.trail_dist_atr_mult * atr_value)
+                pos.trailing_sl = min(pos.sl, close_price + self.risk.trail_dist_atr_mult * atr_value)
             elif pos.trailing_active and pos.trailing_sl is not None:
-                pos.trailing_sl = min(pos.trailing_sl, last_price + self.risk.trail_dist_atr_mult * atr_value)
+                pos.trailing_sl = min(pos.trailing_sl, close_price + self.risk.trail_dist_atr_mult * atr_value)
 
     def maybe_close_position_paper(
         self,
@@ -97,6 +97,7 @@ class OrderManager:
         last_price: float,
         candle_high: float | None = None,
         candle_low: float | None = None,
+        mark_price: float | None = None,
     ) -> None:
         pos = state.positions.get(symbol)
         if not pos:
@@ -107,6 +108,10 @@ class OrderManager:
         exit_price = last_price
         hi = float(candle_high) if candle_high is not None else last_price
         lo = float(candle_low) if candle_low is not None else last_price
+        if mark_price is not None:
+            m = float(mark_price)
+            hi = max(hi, m)
+            lo = min(lo, m)
 
         if pos.side == "long":
             # Intrabar precedence: stop first, then take-profit.

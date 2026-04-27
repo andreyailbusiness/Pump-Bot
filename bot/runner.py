@@ -48,9 +48,12 @@ def _refresh_open_positions_last_price(rt: BotRuntime, symbols: Iterable[str]) -
                 sym = str(row.get("symbol", ""))
                 if not sym:
                     continue
-                raw_price = row.get("lastPrice")
+                # Prefer mark/index over last trade for uPNL and SL checks on perps.
+                raw_price = row.get("indexPrice")
                 if raw_price is None:
                     raw_price = row.get("fairPrice")
+                if raw_price is None:
+                    raw_price = row.get("lastPrice")
                 try:
                     if raw_price is not None:
                         price_map[sym] = float(raw_price)
@@ -242,12 +245,15 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
             atr_value = float(atr_series.iloc[-2]) if not pd.isna(atr_series.iloc[-2]) else 0.0
 
             rt.order_manager.update_position_paper(rt.state, sym, last_price, atr_value)
+            mark = rt.state.positions.get(sym)
+            mark_px = float(mark.last_price) if mark and mark.last_price is not None else None
             rt.order_manager.maybe_close_position_paper(
                 rt.state,
                 sym,
                 last_price,
                 candle_high=candle_high,
                 candle_low=candle_low,
+                mark_price=mark_px,
             )
             if len(rt.state.trades) > before_n:
                 last_trade = rt.state.trades[-1]
@@ -267,6 +273,8 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
         except Exception:
             continue
 
+    if rt.state.positions:
+        _refresh_open_positions_last_price(rt, list(rt.state.positions.keys()))
     rt.save()
 
 
