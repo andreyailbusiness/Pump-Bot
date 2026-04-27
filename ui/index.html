@@ -19,6 +19,8 @@
       .pill { padding: 2px 8px; border-radius: 999px; font-size: 11px; display: inline-block; }
       .long { background: rgba(34,197,94,0.15); color: #35d07f; border: 1px solid rgba(34,197,94,0.35); }
       .short { background: rgba(239,68,68,0.15); color: #ff6b6b; border: 1px solid rgba(239,68,68,0.35); }
+      .upnl-pos { color: #35d07f; }
+      .upnl-neg { color: #ff6b6b; }
       .warn { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.35); }
       .muted { opacity: 0.75; }
       .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
@@ -32,6 +34,7 @@
     <header>
       <h1>Instarding Bot</h1>
       <div class="meta" id="meta">loading…</div>
+      <div class="meta" id="conn" style="margin-left:8px;">connecting…</div>
       <div style="margin-left:auto" class="meta" id="dd"></div>
     </header>
     <main>
@@ -62,6 +65,7 @@
               <th>SL</th>
               <th>TP</th>
               <th>Last</th>
+              <th>uPNL</th>
             </tr>
           </thead>
           <tbody id="positions"></tbody>
@@ -86,14 +90,14 @@
     </main>
 
     <script>
+      const STATE_CACHE_KEY = "instarding:last_state:v1";
       const fmt = (x) => (x === null || x === undefined) ? "—" : (typeof x === "number" ? x.toFixed(6).replace(/\.?0+$/,"") : String(x));
+      const fmtPnl = (x) => (x === null || x === undefined) ? "—" : `${x >= 0 ? "+" : ""}${Number(x).toFixed(4).replace(/\.?0+$/,"")}`;
       const el = (id) => document.getElementById(id);
 
-      async function load() {
-        const res = await fetch("/api/state", { cache: "no-store" });
-        const st = await res.json();
-
-        el("meta").textContent = `updated: ${st.updated_at || "—"} | positions: ${Object.keys(st.positions||{}).length}`;
+      function renderState(st, source = "live") {
+        const sourceTag = source === "cache" ? " | cached" : "";
+        el("meta").textContent = `updated: ${st.updated_at || "—"} | positions: ${Object.keys(st.positions||{}).length}${sourceTag}`;
         el("equity").textContent = fmt(st.equity);
         el("startEquity").textContent = fmt(st.start_equity);
         const dd = (st.start_equity > 0) ? ((st.start_equity - st.equity) / st.start_equity) : 0;
@@ -115,12 +119,13 @@
             <td>${fmt(p.trailing_active && p.trailing_sl ? p.trailing_sl : p.sl)}</td>
             <td>${fmt(p.tp)}</td>
             <td>${fmt(p.last_price)}</td>
+            <td class="${(p.upnl ?? 0) >= 0 ? "upnl-pos" : "upnl-neg"}">${fmtPnl(p.upnl)}</td>
           `;
           posBody.appendChild(tr);
         }
         if (Object.keys(positions).length === 0) {
           const tr = document.createElement("tr");
-          tr.innerHTML = `<td colspan="7" class="muted">Пока нет открытых позиций.</td>`;
+          tr.innerHTML = `<td colspan="8" class="muted">Пока нет открытых позиций.</td>`;
           posBody.appendChild(tr);
         }
 
@@ -144,8 +149,36 @@
         }
       }
 
-      load().catch(() => {});
-      setInterval(() => load().catch(() => {}), 15000);
+      function loadCachedState() {
+        try {
+          const raw = localStorage.getItem(STATE_CACHE_KEY);
+          if (!raw) return false;
+          const parsed = JSON.parse(raw);
+          renderState(parsed, "cache");
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      async function load() {
+        try {
+          const res = await fetch("/api/state", { cache: "no-store" });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const st = await res.json();
+          renderState(st, "live");
+          el("conn").innerHTML = `<span class="pill long">online</span>`;
+          localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(st));
+        } catch {
+          const hasCache = loadCachedState();
+          el("conn").innerHTML = hasCache
+            ? `<span class="pill warn">server waking up (showing cache)</span>`
+            : `<span class="pill warn">server unavailable</span>`;
+        }
+      }
+
+      load();
+      setInterval(load, 15000);
     </script>
   </body>
 </html>

@@ -4,7 +4,7 @@ import argparse
 import math
 import os
 import pickle
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -205,6 +205,8 @@ def backtest_symbol(
     trend_min_move_24h: float = 0.06,
     risk_percent_strong: float | None = None,
     risk_percent_weak: float | None = None,
+    entry_mode_strong: str | None = None,
+    entry_mode_weak: str | None = None,
 ) -> BtResult:
     equity = 1000.0
     peak = equity
@@ -432,20 +434,26 @@ def backtest_symbol(
                 continue
 
         if not pos and atr_val > 0:
-            sig = generate_signal(symbol, window, strat)
-            if not sig:
-                continue
             # Trading mode:
             # - trend: follow raw signal
             # - reverse: invert raw signal
             # - auto: trend in strong regimes, reverse in weak/choppy regimes
+            strong_trend = (adx_val >= trend_min_adx) and (move24 >= trend_min_move_24h)
+            effective_entry_mode = strat.entry_mode
+            if mode == "auto":
+                if strong_trend and entry_mode_strong:
+                    effective_entry_mode = entry_mode_strong
+                if (not strong_trend) and entry_mode_weak:
+                    effective_entry_mode = entry_mode_weak
+            sig = generate_signal(symbol, window, replace(strat, entry_mode=effective_entry_mode))
+            if not sig:
+                continue
             effective_reverse = False
             if mode == "reverse":
                 effective_reverse = True
             elif mode == "trend":
                 effective_reverse = False
             else:
-                strong_trend = (adx_val >= trend_min_adx) and (move24 >= trend_min_move_24h)
                 effective_reverse = not strong_trend
 
             if effective_reverse:
@@ -548,8 +556,17 @@ def backtest_portfolio_daily_reselect(
     reverse_max_move_24h: float = 0.08,
     trend_min_adx: float = 30.0,
     trend_min_move_24h: float = 0.06,
+    min_breadth_count: int = 6,
+    neutral_min_breadth_count: int = 3,
     risk_percent_strong: float | None = None,
+    risk_percent_neutral: float | None = None,
     risk_percent_weak: float | None = None,
+    weak_disable_impulse_entries: bool = False,
+    loss_streak_block_threshold: int = 0,
+    loss_streak_block_hours: int = 0,
+    entry_mode_strong: str | None = None,
+    entry_mode_neutral: str | None = None,
+    entry_mode_weak: str | None = None,
 ) -> PortfolioResult:
     start_equity = 1000.0
     equity = start_equity
@@ -568,6 +585,9 @@ def backtest_portfolio_daily_reselect(
     positions: dict[str, dict[str, float | bool]] = {}
     applied_funding: dict[str, set[int]] = {s: set() for s in symbol_dfs.keys()}
     active_symbols: set[str] = set()
+    regime_by_day: dict[object, str] = {}
+    symbol_loss_streak: dict[str, int] = {}
+    symbol_block_until: dict[str, pd.Timestamp] = {}
     last_day = None
 
     atr_cache = {s: atr_fn(df, strat.atr_period) for s, df in symbol_dfs.items()}
@@ -599,6 +619,25 @@ def backtest_portfolio_daily_reselect(
                 active_symbols = {s for s, _ in selected}
             else:
                 active_symbols = set()
+            # 3-phase regime by market breadth on currently tradable universe.
+            strong_count = 0
+            for sym in active_symbols:
+                df = symbol_dfs[sym]
+                if ts not in df.index:
+                    continue
+                idx = df.index.get_loc(ts)
+                if idx < 2:
+                    continue
+                adx_val = float(adx_cache[sym].iloc[idx]) if not pd.isna(adx_cache[sym].iloc[idx]) else 0.0
+                move24 = float(move24_cache[sym].iloc[idx]) if not pd.isna(move24_cache[sym].iloc[idx]) else 0.0
+                if (adx_val >= trend_min_adx) and (move24 >= trend_min_move_24h):
+                    strong_count += 1
+            if strong_count >= int(min_breadth_count):
+                regime_by_day[day] = "strong"
+            elif strong_count >= int(neutral_min_breadth_count):
+                regime_by_day[day] = "neutral"
+            else:
+                regime_by_day[day] = "weak"
 
         # Update open positions first (funding, trailing, exits).
         for sym in list(positions.keys()):
@@ -695,6 +734,16 @@ def backtest_portfolio_daily_reselect(
                 if sym not in symbol_monthly_pnl:
                     symbol_monthly_pnl[sym] = {}
                 symbol_monthly_pnl[sym][m] = symbol_monthly_pnl[sym].get(m, 0.0) + float(net)
+                # Symbol kill-switch: block symbol after consecutive losing stop exits.
+                if hit == "sl" and net < 0:
+                    streak = int(symbol_loss_streak.get(sym, 0)) + 1
+                    symbol_loss_streak[sym] = streak
+                    if int(loss_streak_block_threshold) > 0 and streak >= int(loss_streak_block_threshold):
+                        if int(loss_streak_block_hours) > 0:
+                            symbol_block_until[sym] = ts + pd.Timedelta(hours=int(loss_streak_block_hours))
+                elif net > 0:
+                    symbol_loss_streak[sym] = 0
+                    symbol_block_until.pop(sym, None)
                 del positions[sym]
                 peak = max(peak, equity)
                 dd = (peak - equity) / peak if peak > 0 else 0.0
@@ -704,6 +753,9 @@ def backtest_portfolio_daily_reselect(
         for sym in active_symbols:
             if sym in positions:
                 continue
+            block_until = symbol_block_until.get(sym)
+            if block_until is not None and ts < block_until:
+                continue
             df = symbol_dfs[sym]
             if ts not in df.index:
                 continue
@@ -711,19 +763,29 @@ def backtest_portfolio_daily_reselect(
             if idx < 250:
                 continue
             window = df.iloc[: idx + 1]
-            sig = generate_signal(sym, window, strat)
-            if not sig:
-                continue
-
             adx_val = float(adx_cache[sym].iloc[idx]) if not pd.isna(adx_cache[sym].iloc[idx]) else 0.0
             move24 = float(move24_cache[sym].iloc[idx]) if not pd.isna(move24_cache[sym].iloc[idx]) else 0.0
+            day_regime = regime_by_day.get(day, "weak")
+            strong_trend = (day_regime == "strong")
+            effective_entry_mode = strat.entry_mode
+            if mode == "auto":
+                if strong_trend and entry_mode_strong:
+                    effective_entry_mode = entry_mode_strong
+                elif day_regime == "neutral" and entry_mode_neutral:
+                    effective_entry_mode = entry_mode_neutral
+                elif (day_regime == "weak") and entry_mode_weak:
+                    effective_entry_mode = entry_mode_weak
+            if day_regime == "weak" and weak_disable_impulse_entries and effective_entry_mode in {"pump", "momentum", "hybrid"}:
+                effective_entry_mode = "retest"
+            sig = generate_signal(sym, window, replace(strat, entry_mode=effective_entry_mode))
+            if not sig:
+                continue
             effective_reverse = False
             if mode == "reverse":
                 effective_reverse = True
             elif mode == "trend":
                 effective_reverse = False
             else:
-                strong_trend = (adx_val >= trend_min_adx) and (move24 >= trend_min_move_24h)
                 effective_reverse = not strong_trend
             if effective_reverse and (adx_val > reverse_max_adx or move24 > reverse_max_move_24h):
                 continue
@@ -731,12 +793,13 @@ def backtest_portfolio_daily_reselect(
                 inv_side = "short" if sig.side.value == "long" else "long"
                 sig = type("Sig", (), {"side": type("S", (), {"value": inv_side})(), "entry_price": sig.entry_price, "atr": sig.atr})
 
-            strong_trend = (adx_val >= trend_min_adx) and (move24 >= trend_min_move_24h)
             eff_risk = risk.risk_percent
             if mode == "auto":
-                if strong_trend and (risk_percent_strong is not None):
+                if day_regime == "strong" and (risk_percent_strong is not None):
                     eff_risk = float(risk_percent_strong)
-                if (not strong_trend) and (risk_percent_weak is not None):
+                elif day_regime == "neutral" and (risk_percent_neutral is not None):
+                    eff_risk = float(risk_percent_neutral)
+                elif day_regime == "weak" and (risk_percent_weak is not None):
                     eff_risk = float(risk_percent_weak)
             eff_tranche_risk = tranche_risk_percent(eff_risk, risk.pyramids_max)
             rp0 = RiskParams(
@@ -819,8 +882,32 @@ def main() -> None:
     ap.add_argument("--mode", choices=["auto", "trend", "reverse"], default="auto", help="Directional mode.")
     ap.add_argument("--trend-min-adx", type=float, default=30.0, help="Auto-mode: min ADX for trend-follow mode.")
     ap.add_argument("--trend-min-move-24h", type=float, default=0.06, help="Auto-mode: min abs 24h move for trend-follow mode.")
+    ap.add_argument("--min-breadth-count", type=int, default=6, help="Auto-mode: strong regime breadth threshold.")
+    ap.add_argument("--neutral-min-breadth-count", type=int, default=3, help="Auto-mode: neutral regime breadth threshold.")
+    ap.add_argument(
+        "--entry-mode-strong",
+        choices=["retest", "momentum", "hybrid", "pump"],
+        default=None,
+        help="Auto-mode: override entry mode in strong regime (e.g. pump).",
+    )
+    ap.add_argument(
+        "--entry-mode-neutral",
+        choices=["retest", "momentum", "hybrid", "pump"],
+        default=None,
+        help="Auto-mode: override entry mode in neutral regime.",
+    )
+    ap.add_argument(
+        "--entry-mode-weak",
+        choices=["retest", "momentum", "hybrid", "pump"],
+        default=None,
+        help="Auto-mode: override entry mode in weak regime (e.g. hybrid).",
+    )
     ap.add_argument("--risk-percent-strong", type=float, default=None, help="Auto-mode: override risk percent in strong-trend regime.")
+    ap.add_argument("--risk-percent-neutral", type=float, default=None, help="Auto-mode: override risk percent in neutral regime.")
     ap.add_argument("--risk-percent-weak", type=float, default=None, help="Auto-mode: override risk percent in weak/choppy regime.")
+    ap.add_argument("--weak-disable-impulse-entries", action="store_true", help="In weak regime force retest-like entries (disable pump/momentum/hybrid impulse).")
+    ap.add_argument("--loss-streak-block-threshold", type=int, default=0, help="Block symbol after this many consecutive losing SL exits.")
+    ap.add_argument("--loss-streak-block-hours", type=int, default=0, help="Hours to block symbol after loss streak threshold.")
     ap.add_argument("--daily-reselect", action="store_true", help="Rebuild tradable symbol list every day.")
     ap.add_argument(
         "--daily-top-n",
@@ -963,8 +1050,17 @@ def main() -> None:
             reverse_max_move_24h=float(args.reverse_max_move_24h),
             trend_min_adx=float(args.trend_min_adx),
             trend_min_move_24h=float(args.trend_min_move_24h),
+            min_breadth_count=int(args.min_breadth_count),
+            neutral_min_breadth_count=int(args.neutral_min_breadth_count),
             risk_percent_strong=(float(args.risk_percent_strong) if args.risk_percent_strong is not None else None),
+            risk_percent_neutral=(float(args.risk_percent_neutral) if args.risk_percent_neutral is not None else None),
             risk_percent_weak=(float(args.risk_percent_weak) if args.risk_percent_weak is not None else None),
+            weak_disable_impulse_entries=bool(args.weak_disable_impulse_entries),
+            loss_streak_block_threshold=int(args.loss_streak_block_threshold),
+            loss_streak_block_hours=int(args.loss_streak_block_hours),
+            entry_mode_strong=(str(args.entry_mode_strong) if args.entry_mode_strong else None),
+            entry_mode_neutral=(str(args.entry_mode_neutral) if args.entry_mode_neutral else None),
+            entry_mode_weak=(str(args.entry_mode_weak) if args.entry_mode_weak else None),
         )
         winrate = (pr.wins / pr.trades) if pr.trades else 0.0
         print(
@@ -1049,6 +1145,8 @@ def main() -> None:
                 trend_min_move_24h=float(args.trend_min_move_24h),
                 risk_percent_strong=(float(args.risk_percent_strong) if args.risk_percent_strong is not None else None),
                 risk_percent_weak=(float(args.risk_percent_weak) if args.risk_percent_weak is not None else None),
+                entry_mode_strong=(str(args.entry_mode_strong) if args.entry_mode_strong else None),
+                entry_mode_weak=(str(args.entry_mode_weak) if args.entry_mode_weak else None),
             )
             results.append(r)
             print(

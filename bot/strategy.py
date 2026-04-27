@@ -162,9 +162,15 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
         not_exhausted_long = overext <= p.pump_max_overext_atr
         not_exhausted_short = overext <= p.pump_short_max_overext_atr
         recent = df.iloc[-(max(3, p.pump_lookback) + 2) : -1]
+        # Quality gates to skip noisy "trash moves".
+        min_body_atr_long = 0.35
+        min_body_atr_short = 0.40
+        max_range_atr = 3.50
+        breakout_buffer_atr = 0.10
 
         if trend_side == Side.LONG:
             fresh_long = False
+            breakout_close_long = None
             for j in range(1, recent.shape[0]):
                 row = recent.iloc[j]
                 prev_row = recent.iloc[j - 1]
@@ -182,26 +188,36 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
                 ret = (c / o - 1.0) if o > 0 else 0.0
                 body = abs(c - o)
                 upper_wick = h - max(c, o)
+                atr_row = float(row["atr"]) if not pd.isna(row["atr"]) else last_atr
+                body_atr = body / max(atr_row, 1e-12)
+                range_atr = rng / max(atr_row, 1e-12)
                 vol_ok = vma > 0 and (v >= p.pump_volume_mult * vma)
                 impulse_ok = (ret >= p.pump_min_ret_1h) and (close_pos >= p.pump_close_pos_min)
                 breakout_ok = (
                     (bb_u is not None)
                     and (prev_bb_u is not None)
-                    and (c > bb_u)
+                    and (c > bb_u + breakout_buffer_atr * atr_row)
                     and (prev_close <= prev_bb_u)
                 )
                 wick_ok = upper_wick <= p.pump_max_opp_wick_ratio * max(body, 1e-12)
+                quality_ok = (body_atr >= min_body_atr_long) and (range_atr <= max_range_atr)
                 # Long side is intentionally softer: we keep fresh breakout+impulse and
                 # avoid over-constraining continuation to prevent missing early pumps.
-                if impulse_ok and vol_ok and breakout_ok and wick_ok:
+                if impulse_ok and vol_ok and breakout_ok and wick_ok and quality_ok:
                     fresh_long = True
+                    breakout_close_long = c
                     break
             # Enter only if fresh breakout happened recently and price did not run too far yet.
-            if fresh_long and not_exhausted_long:
+            continuation_ok = True
+            if breakout_close_long is not None:
+                # Skip setups that instantly faded after breakout candle.
+                continuation_ok = c_last >= (0.985 * breakout_close_long)
+            if fresh_long and not_exhausted_long and continuation_ok:
                 pump_ok = True
                 pump_reason = "Recent fresh long pump breakout (impulse+volume), avoid late chase"
         else:
             fresh_short = False
+            breakout_close_short = None
             for j in range(1, recent.shape[0]):
                 row = recent.iloc[j]
                 prev_row = recent.iloc[j - 1]
@@ -219,20 +235,28 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
                 ret = (c / o - 1.0) if o > 0 else 0.0
                 body = abs(c - o)
                 lower_wick = min(c, o) - l
+                atr_row = float(row["atr"]) if not pd.isna(row["atr"]) else last_atr
+                body_atr = body / max(atr_row, 1e-12)
+                range_atr = rng / max(atr_row, 1e-12)
                 vol_ok = vma > 0 and (v >= p.pump_short_volume_mult * vma)
                 impulse_ok = (ret <= -p.pump_short_min_ret_1h) and (close_pos_short >= p.pump_short_close_pos_min)
                 breakout_ok = (
                     (bb_l is not None)
                     and (prev_bb_l is not None)
-                    and (c < bb_l)
+                    and (c < bb_l - breakout_buffer_atr * atr_row)
                     and (prev_close >= prev_bb_l)
                 )
                 wick_ok = lower_wick <= p.pump_short_max_opp_wick_ratio * max(body, 1e-12)
+                quality_ok = (body_atr >= min_body_atr_short) and (range_atr <= max_range_atr)
                 continuation_ok = c <= float(last["bb_lower"]) if not pd.isna(last["bb_lower"]) else True
-                if impulse_ok and vol_ok and breakout_ok and wick_ok and continuation_ok:
+                if impulse_ok and vol_ok and breakout_ok and wick_ok and continuation_ok and quality_ok:
                     fresh_short = True
+                    breakout_close_short = c
                     break
-            if fresh_short and not_exhausted_short:
+            continuation_short_ok = True
+            if breakout_close_short is not None:
+                continuation_short_ok = c_last <= (1.015 * breakout_close_short)
+            if fresh_short and not_exhausted_short and continuation_short_ok:
                 pump_ok = True
                 pump_reason = "Recent fresh short dump breakout (impulse+volume), avoid late chase"
 

@@ -10,6 +10,7 @@ import uvicorn
 
 from .api import create_app
 from .config import Settings, get_settings
+from .remote_state import choose_newer_state, pull_state_from_github, push_state_to_github
 from .runner import bot_loop, build_runtime
 from .state import BotState, StateStore
 
@@ -47,6 +48,21 @@ async def periodic_state_backup(
         await asyncio.sleep(interval)
 
 
+async def periodic_github_state_sync(
+    state_store: StateStore,
+    get_state: Callable[[], BotState],
+    settings: Settings,
+) -> None:
+    interval = max(30, int(settings.github_state_sync_interval_sec))
+    while True:
+        try:
+            payload = state_store.to_dict(get_state())
+            await asyncio.to_thread(push_state_to_github, settings, payload)
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+
+
 def main() -> None:
     settings = get_settings()
     rt = build_runtime(settings)
@@ -65,9 +81,22 @@ def main() -> None:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if settings.github_state_sync_enabled:
+            try:
+                local_payload = state_store.to_dict(rt.state)
+                remote_payload = await asyncio.to_thread(pull_state_from_github, settings)
+                if remote_payload:
+                    selected = choose_newer_state(local_payload, remote_payload)
+                    rt.state = state_store.from_dict(selected)
+                    state_store.save(rt.state)
+            except Exception:
+                pass
+
         asyncio.create_task(bot_loop(rt))
         if settings.state_backup_enabled:
             asyncio.create_task(periodic_state_backup(state_store, get_state, settings))
+        if settings.github_state_sync_enabled:
+            asyncio.create_task(periodic_github_state_sync(state_store, get_state, settings))
 
     port = settings.port or settings.api_port
     uvicorn.run(app, host=settings.api_host, port=port, log_level="info")

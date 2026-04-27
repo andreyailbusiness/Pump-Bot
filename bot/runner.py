@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 import pandas as pd
@@ -16,6 +17,23 @@ from .state import BotState, StateStore
 from .strategy import StrategyParams, generate_signal
 from .symbols import TopSymbolsCache, get_futures_candidates_with_turnover, get_top_symbols_by_quote_volume
 from .telegram_notifier import TelegramNotifier
+
+
+def _parse_iso(s: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _is_symbol_blocked(rt: BotRuntime, symbol: str) -> bool:
+    until = rt.state.symbol_block_until.get(symbol)
+    if not until:
+        return False
+    dt = _parse_iso(until)
+    if dt is None:
+        return False
+    return datetime.now(timezone.utc) < dt
 
 
 @dataclass
@@ -97,7 +115,7 @@ async def scan_symbol(rt: BotRuntime, symbol: str) -> None:
     )
 
 
-async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float) -> None:
+async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float, entry_mode: str | None = None) -> None:
     """
     Open new positions with a regime-dependent risk percent.
     Existing positions are managed separately and are intentionally untouched.
@@ -106,11 +124,14 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
         return
     if rt.order_manager.in_cooldown(rt.state, symbol):
         return
+    if _is_symbol_blocked(rt, symbol):
+        return
     if rt.state.max_drawdown_reached(rt.settings.max_drawdown):
         return
 
     df = await fetch_klines(rt.client, symbol, rt.settings.timeframe, rt.settings.candles_limit)
-    sig = generate_signal(symbol, df, rt.strat_params)
+    strat = rt.strat_params if not entry_mode else replace(rt.strat_params, entry_mode=entry_mode)
+    sig = generate_signal(symbol, df, strat)
     if not sig:
         return
 
@@ -145,6 +166,7 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
                 f"TP: {plan.tp:.6g}",
                 f"Qty: {plan.qty:.6g}",
                 f"Risk mode: {risk_percent*100:.2f}%",
+                f"Entry mode: {strat.entry_mode}",
                 f"Reason: {sig.reason}",
             ]
         )
@@ -157,6 +179,7 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
 
     for sym in list(symbols):
         try:
+            before_n = len(rt.state.trades)
             df = await fetch_klines(rt.client, sym, rt.settings.timeframe, max(60, rt.settings.atr_period + 10))
             last = _last_closed(df)
             last_price = float(last["close"])
@@ -169,6 +192,21 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
 
             rt.order_manager.update_position_paper(rt.state, sym, last_price, atr_value)
             rt.order_manager.maybe_close_position_paper(rt.state, sym, last_price)
+            if len(rt.state.trades) > before_n:
+                last_trade = rt.state.trades[-1]
+                if last_trade.get("type") == "close" and str(last_trade.get("symbol")) == sym:
+                    reason = str(last_trade.get("reason", ""))
+                    pnl = float(last_trade.get("pnl", 0.0) or 0.0)
+                    streak = int(rt.state.symbol_loss_streak.get(sym, 0))
+                    if reason in {"sl", "trailing_sl"} and pnl < 0:
+                        streak += 1
+                        rt.state.symbol_loss_streak[sym] = streak
+                        if streak >= int(rt.settings.loss_streak_block_threshold):
+                            block_until = datetime.now(timezone.utc) + timedelta(hours=int(rt.settings.loss_streak_block_hours))
+                            rt.state.symbol_block_until[sym] = block_until.isoformat()
+                    elif pnl > 0:
+                        rt.state.symbol_loss_streak[sym] = 0
+                        rt.state.symbol_block_until.pop(sym, None)
         except Exception:
             continue
 
@@ -204,7 +242,12 @@ async def detect_market_regime(rt: BotRuntime, symbols: list[str]) -> tuple[str,
         except Exception:
             continue
 
-    regime = "strong" if strong_count >= int(rt.settings.min_breadth_count) else "weak"
+    if strong_count >= int(rt.settings.min_breadth_count):
+        regime = "strong"
+    elif strong_count >= int(rt.settings.neutral_min_breadth_count):
+        regime = "neutral"
+    else:
+        regime = "weak"
     return regime, strong_count
 
 
@@ -284,7 +327,17 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
                 )
 
             regime, breadth = await detect_market_regime(rt, symbols)
-            entry_risk = float(rt.settings.risk_percent_strong) if regime == "strong" else float(rt.settings.risk_percent_weak)
+            if regime == "strong":
+                entry_risk = float(rt.settings.risk_percent_strong)
+                entry_mode = str(rt.settings.strategy_entry_mode_strong)
+            elif regime == "neutral":
+                entry_risk = float(rt.settings.risk_percent_neutral)
+                entry_mode = str(rt.settings.strategy_entry_mode_neutral)
+            else:
+                entry_risk = float(rt.settings.risk_percent_weak)
+                entry_mode = str(rt.settings.strategy_entry_mode_weak)
+                if rt.settings.weak_disable_impulse_entries and entry_mode in {"pump", "momentum", "hybrid"}:
+                    entry_mode = "retest"
             rt.state.market_regime = regime
             rt.state.regime_entry_risk = entry_risk
             rt.state.regime_breadth = int(breadth)
@@ -292,13 +345,14 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
             print(
                 f"[risk-mode] regime={regime} breadth={breadth}/{len(symbols)} "
                 f"entry_risk={entry_risk*100:.2f}% "
+                f"entry_mode={entry_mode} "
                 f"(thresholds adx>={rt.settings.trend_min_adx}, move24h>={rt.settings.trend_min_move_24h}, min_breadth={rt.settings.min_breadth_count})",
                 flush=True,
             )
 
             # Scan sequentially to keep API usage conservative on free tiers.
             for sym in symbols:
-                await scan_symbol_with_risk(rt, sym, entry_risk)
+                await scan_symbol_with_risk(rt, sym, entry_risk, entry_mode=entry_mode)
 
         except Exception:
             pass

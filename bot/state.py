@@ -40,8 +40,10 @@ class BotState:
     start_equity: float = 1000.0
     positions: dict[str, Position] = field(default_factory=dict)  # symbol -> position
     cooldown_until: dict[str, str] = field(default_factory=dict)  # symbol -> iso time
+    symbol_block_until: dict[str, str] = field(default_factory=dict)  # symbol -> iso time (kill-switch)
+    symbol_loss_streak: dict[str, int] = field(default_factory=dict)  # symbol -> consecutive stop-losses
     trades: list[dict[str, Any]] = field(default_factory=list)
-    market_regime: str = "unknown"  # strong|weak|unknown
+    market_regime: str = "unknown"  # strong|neutral|weak|unknown
     regime_entry_risk: float = 0.0
     regime_breadth: int = 0
     regime_universe: int = 0
@@ -82,6 +84,8 @@ class StateStore:
             equity=float(raw.get("equity", 1000.0)),
             start_equity=float(raw.get("start_equity", raw.get("equity", 1000.0))),
             cooldown_until=dict(raw.get("cooldown_until", {}) or {}),
+            symbol_block_until=dict(raw.get("symbol_block_until", {}) or {}),
+            symbol_loss_streak={k: int(v) for k, v in dict(raw.get("symbol_loss_streak", {}) or {}).items()},
             trades=list(raw.get("trades", []) or []),
             market_regime=str(raw.get("market_regime", "unknown")),
             regime_entry_risk=float(raw.get("regime_entry_risk", 0.0)),

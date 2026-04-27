@@ -11,6 +11,14 @@ from fastapi.staticfiles import StaticFiles
 from .state import BotState, StateStore
 
 
+def _position_upnl(side: str, qty: float, entry_price: float, last_price: float | None) -> float | None:
+    if last_price is None:
+        return None
+    if side == "long":
+        return (last_price - entry_price) * qty
+    return (entry_price - last_price) * qty
+
+
 def create_app(
     state_store: StateStore,
     get_state: Callable[[], BotState],
@@ -33,13 +41,33 @@ def create_app(
     def api_state() -> Any:
         st = get_state()
         d = asdict(st)
-        d["positions"] = {k: asdict(v) for k, v in st.positions.items()}
+        out_positions: dict[str, Any] = {}
+        for k, v in st.positions.items():
+            p = asdict(v)
+            p["upnl"] = _position_upnl(
+                side=str(v.side),
+                qty=float(v.qty),
+                entry_price=float(v.entry_price),
+                last_price=(float(v.last_price) if v.last_price is not None else None),
+            )
+            out_positions[k] = p
+        d["positions"] = out_positions
         return d
 
     @app.get("/api/positions")
     def api_positions() -> Any:
         st = get_state()
-        return {k: asdict(v) for k, v in st.positions.items()}
+        out_positions: dict[str, Any] = {}
+        for k, v in st.positions.items():
+            p = asdict(v)
+            p["upnl"] = _position_upnl(
+                side=str(v.side),
+                qty=float(v.qty),
+                entry_price=float(v.entry_price),
+                last_price=(float(v.last_price) if v.last_price is not None else None),
+            )
+            out_positions[k] = p
+        return out_positions
 
     @app.get("/api/trades")
     def api_trades(limit: int = 200) -> Any:
