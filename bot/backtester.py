@@ -28,6 +28,34 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_iso_day_utc(s: str) -> datetime:
+    """Parse YYYY-MM-DD as UTC midnight."""
+    return datetime.strptime(s.strip(), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def _clip_symbol_dfs_history(
+    symbol_dfs: dict[str, pd.DataFrame],
+    history_start: datetime | None,
+    history_end: datetime | None,
+    min_rows: int = 200,
+) -> dict[str, pd.DataFrame]:
+    """Restrict rows to [history_start, history_end] for each symbol (warm-up safe)."""
+    out: dict[str, pd.DataFrame] = {}
+    hs = pd.Timestamp(history_start) if history_start is not None else None
+    he = pd.Timestamp(history_end) if history_end is not None else None
+    for sym, df in symbol_dfs.items():
+        if df is None or df.empty:
+            continue
+        d = df
+        if hs is not None:
+            d = d[d.index >= hs]
+        if he is not None:
+            d = d[d.index <= he]
+        if int(d.shape[0]) >= min_rows:
+            out[sym] = d
+    return out
+
+
 def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
@@ -567,6 +595,8 @@ def backtest_portfolio_daily_reselect(
     entry_mode_strong: str | None = None,
     entry_mode_neutral: str | None = None,
     entry_mode_weak: str | None = None,
+    trade_range_start: pd.Timestamp | None = None,
+    trade_range_end: pd.Timestamp | None = None,
 ) -> PortfolioResult:
     start_equity = 1000.0
     equity = start_equity
@@ -595,6 +625,10 @@ def backtest_portfolio_daily_reselect(
     move24_cache = {s: df["close"].pct_change(24).abs() for s, df in symbol_dfs.items()}
 
     timeline = sorted(set().union(*[set(df.index.tolist()) for df in symbol_dfs.values()]))
+    if trade_range_start is not None:
+        timeline = [t for t in timeline if pd.Timestamp(t) >= pd.Timestamp(trade_range_start)]
+    if trade_range_end is not None:
+        timeline = [t for t in timeline if pd.Timestamp(t) <= pd.Timestamp(trade_range_end)]
     tranche_risk = tranche_risk_percent(risk.risk_percent, risk.pyramids_max)
 
     for ts in timeline:
@@ -930,7 +964,35 @@ def main() -> None:
         default="detail",
         help="Universe source: ticker (active now) or detail (includes historical/offline).",
     )
+    ap.add_argument(
+        "--since",
+        type=str,
+        default="",
+        help="Simulate from this UTC date (YYYY-MM-DD) inclusive. Loads extra warmup history automatically.",
+    )
+    ap.add_argument(
+        "--until",
+        type=str,
+        default="",
+        help="Simulate through this UTC date (YYYY-MM-DD) end-of-day inclusive. Default when --since set: now (UTC).",
+    )
+    ap.add_argument(
+        "--warmup-days",
+        type=int,
+        default=45,
+        help="Days of history before --since for EMA/ATR (default 45).",
+    )
     args = ap.parse_args()
+
+    if args.since.strip():
+        since_d = _parse_iso_day_utc(args.since)
+        if args.until.strip():
+            until_d = _parse_iso_day_utc(args.until)
+            end_ref = until_d.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+        else:
+            end_ref = _utcnow()
+        span_days = max(1, (end_ref - since_d).days + int(args.warmup_days) + 10)
+        args.days = max(int(args.days), span_days)
 
     s = get_settings()
     client = MexcFuturesClient(base_url=s.mexc_base_url)
@@ -1035,6 +1097,32 @@ def main() -> None:
             print("No symbol data for daily reselect.")
             return
 
+        trade_range_start: pd.Timestamp | None = None
+        trade_range_end: pd.Timestamp | None = None
+        if args.since.strip():
+            since_d = _parse_iso_day_utc(args.since)
+            trade_range_start = pd.Timestamp(since_d)
+            wu = max(1, int(args.warmup_days))
+            hs = pd.Timestamp(since_d - timedelta(days=wu))
+            if args.until.strip():
+                ud = _parse_iso_day_utc(args.until)
+                trade_range_end = pd.Timestamp(
+                    ud.replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc)
+                )
+                he = trade_range_end
+            else:
+                trade_range_end = pd.Timestamp(_utcnow())
+                he = trade_range_end
+            symbol_dfs = _clip_symbol_dfs_history(symbol_dfs, hs.to_pydatetime(), he.to_pydatetime())
+            print(
+                f"Date window: trades from {trade_range_start} through {trade_range_end} "
+                f"(history from {hs})",
+                flush=True,
+            )
+            if not symbol_dfs:
+                print("No symbol data left after date window clip.")
+                return
+
         pr = backtest_portfolio_daily_reselect(
             symbol_dfs=symbol_dfs,
             strat=strat,
@@ -1061,6 +1149,8 @@ def main() -> None:
             entry_mode_strong=(str(args.entry_mode_strong) if args.entry_mode_strong else None),
             entry_mode_neutral=(str(args.entry_mode_neutral) if args.entry_mode_neutral else None),
             entry_mode_weak=(str(args.entry_mode_weak) if args.entry_mode_weak else None),
+            trade_range_start=trade_range_start,
+            trade_range_end=trade_range_end,
         )
         winrate = (pr.wins / pr.trades) if pr.trades else 0.0
         print(
