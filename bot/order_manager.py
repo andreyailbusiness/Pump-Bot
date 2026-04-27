@@ -90,29 +90,45 @@ class OrderManager:
             elif pos.trailing_active and pos.trailing_sl is not None:
                 pos.trailing_sl = min(pos.trailing_sl, last_price + self.risk.trail_dist_atr_mult * atr_value)
 
-    def maybe_close_position_paper(self, state: BotState, symbol: str, last_price: float) -> None:
+    def maybe_close_position_paper(
+        self,
+        state: BotState,
+        symbol: str,
+        last_price: float,
+        candle_high: float | None = None,
+        candle_low: float | None = None,
+    ) -> None:
         pos = state.positions.get(symbol)
         if not pos:
             return
 
         sl_level = pos.trailing_sl if pos.trailing_active and pos.trailing_sl is not None else pos.sl
         hit: str | None = None
+        exit_price = last_price
+        hi = float(candle_high) if candle_high is not None else last_price
+        lo = float(candle_low) if candle_low is not None else last_price
 
         if pos.side == "long":
-            if last_price <= sl_level:
+            # Intrabar precedence: stop first, then take-profit.
+            if lo <= sl_level:
                 hit = "sl" if not pos.trailing_active else "trailing_sl"
-            elif last_price >= pos.tp:
+                exit_price = sl_level
+            elif hi >= pos.tp:
                 hit = "tp"
+                exit_price = pos.tp
         else:
-            if last_price >= sl_level:
+            # Intrabar precedence: stop first, then take-profit.
+            if hi >= sl_level:
                 hit = "sl" if not pos.trailing_active else "trailing_sl"
-            elif last_price <= pos.tp:
+                exit_price = sl_level
+            elif lo <= pos.tp:
                 hit = "tp"
+                exit_price = pos.tp
 
         if not hit:
             return
 
-        pnl = self._pnl_quote(pos, last_price)
+        pnl = self._pnl_quote(pos, exit_price)
         state.equity += pnl
         state.trades.append(
             {
@@ -122,7 +138,7 @@ class OrderManager:
                 "side": pos.side,
                 "qty": pos.qty,
                 "entry": pos.entry_price,
-                "exit": last_price,
+                "exit": exit_price,
                 "pnl": pnl,
                 "reason": hit,
             }

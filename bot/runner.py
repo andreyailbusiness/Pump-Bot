@@ -232,6 +232,8 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
             df = await fetch_klines(rt.client, sym, rt.settings.timeframe, max(60, rt.settings.atr_period + 10))
             last = _last_closed(df)
             last_price = float(last["close"])
+            candle_high = float(last["high"])
+            candle_low = float(last["low"])
 
             # ATR from same df
             from .indicators import atr as atr_fn
@@ -240,7 +242,13 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
             atr_value = float(atr_series.iloc[-2]) if not pd.isna(atr_series.iloc[-2]) else 0.0
 
             rt.order_manager.update_position_paper(rt.state, sym, last_price, atr_value)
-            rt.order_manager.maybe_close_position_paper(rt.state, sym, last_price)
+            rt.order_manager.maybe_close_position_paper(
+                rt.state,
+                sym,
+                last_price,
+                candle_high=candle_high,
+                candle_low=candle_low,
+            )
             if len(rt.state.trades) > before_n:
                 last_trade = rt.state.trades[-1]
                 if last_trade.get("type") == "close" and str(last_trade.get("symbol")) == sym:
