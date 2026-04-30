@@ -14,7 +14,7 @@ services:
       - key: MARKET_TYPE
         value: futures
       - key: TOP_SYMBOLS_LIMIT
-        value: "150"
+        value: "120"
       - key: STATE_PATH
         value: /var/data/state.json
       - key: TOP_SYMBOLS_CACHE_PATH
@@ -42,7 +42,7 @@ services:
       - key: GITHUB_STATE_COMMIT_MESSAGE
         value: "chore(state): sync bot runtime state"
       - key: TIMEFRAME
-        value: 1h
+        value: 15m
       - key: CANDLES_LIMIT
         value: "300"
       - key: RISK_PERCENT
@@ -50,9 +50,9 @@ services:
       - key: RISK_PERCENT_STRONG
         value: "0.015"
       - key: RISK_PERCENT_NEUTRAL
-        value: "0.01"
+        value: "0.015"
       - key: RISK_PERCENT_WEAK
-        value: "0.005"
+        value: "0.015"
       - key: MAX_DRAWDOWN
         value: "1"
       - key: LEVERAGE
@@ -69,6 +69,40 @@ services:
         value: hybrid
       - key: WEAK_DISABLE_IMPULSE_ENTRIES
         value: "true"
+      - key: PUMP_LOOKBACK
+        value: "6"
+      - key: PUMP_MIN_RET_1H
+        value: "0.02"
+      - key: PUMP_VOLUME_MULT
+        value: "1.8"
+      - key: PUMP_CLOSE_POS_MIN
+        value: "0.65"
+      - key: PUMP_MAX_OVEREXT_ATR
+        value: "1.0"
+      - key: PUMP_MAX_OPP_WICK_RATIO
+        value: "1.2"
+      - key: PUMP_SHORT_MIN_RET_1H
+        value: "0.018"
+      - key: PUMP_SHORT_VOLUME_MULT
+        value: "1.8"
+      - key: PUMP_SHORT_CLOSE_POS_MIN
+        value: "0.65"
+      - key: PUMP_SHORT_MAX_OVEREXT_ATR
+        value: "1.4"
+      - key: PUMP_SHORT_MAX_OPP_WICK_RATIO
+        value: "1.0"
+      - key: PUMP_MIN_BODY_ATR_LONG
+        value: "0.35"
+      - key: PUMP_MIN_BODY_ATR_SHORT
+        value: "0.40"
+      - key: PUMP_MAX_RANGE_ATR
+        value: "3.5"
+      - key: PUMP_BREAKOUT_BUFFER_ATR
+        value: "0.10"
+      - key: PUMP_CONTINUATION_MIN_RATIO_LONG
+        value: "0.985"
+      - key: PUMP_CONTINUATION_MAX_RATIO_SHORT
+        value: "1.015"
       - key: ATR_MIN_PCT
         value: "0.005"
       - key: NEUTRAL_MIN_BREADTH_COUNT
@@ -79,6 +113,16 @@ services:
         value: "2"
       - key: LOSS_STREAK_BLOCK_HOURS
         value: "72"
+      - key: PAPER_STAGED_EXITS
+        value: "true"
+      - key: PAPER_STAGE2_R
+        value: "3.0"
+      - key: PAPER_STAGE2_CLOSE_RATIO
+        value: "0.50"
+      - key: PAPER_STAGED_FINAL_R
+        value: "false"
+      - key: PAPER_STAGE3_R
+        value: "5.0"
       - key: FUTURES_TAKER_FEE_RATE
         value: "0.0004"
       - key: SLIPPAGE_BPS

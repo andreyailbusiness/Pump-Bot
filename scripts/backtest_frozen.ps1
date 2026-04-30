@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 # Ориентир по отчёту (~90 дн, фев–апр): ROI ~49%, MaxDD ~11%, PF ~2, сделок ~120 (числа могут плавать из‑за данных API).
 
 python -m bot.backtester `
+  --timeframe 1h `
   --days 90 `
   --limit 120 `
   --fee 0.0004 `
@@ -33,3 +34,6 @@ python -m bot.backtester `
   --daily-lookback-days 14 `
   --daily-score-quantile 0.75 `
   --report-all-months
+
+# Candidate profile for comparison:
+# powershell -NoProfile -ExecutionPolicy Bypass -File "scripts/backtest_candidate_15m.ps1" -Days 90

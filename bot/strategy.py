@@ -26,9 +26,9 @@ class StrategyParams:
     pullback_lookback: int = 10
     entry_mode: Literal["retest", "momentum", "hybrid", "pump"] = "hybrid"
     pump_lookback: int = 6
-    pump_min_ret_1h: float = 0.012
-    pump_volume_mult: float = 1.4
-    pump_close_pos_min: float = 0.55
+    pump_min_ret_1h: float = 0.018
+    pump_volume_mult: float = 1.6
+    pump_close_pos_min: float = 0.60
     pump_max_overext_atr: float = 2.2
     pump_max_opp_wick_ratio: float = 2.0
     pump_short_min_ret_1h: float = 0.018
@@ -36,6 +36,12 @@ class StrategyParams:
     pump_short_close_pos_min: float = 0.65
     pump_short_max_overext_atr: float = 1.4
     pump_short_max_opp_wick_ratio: float = 1.0
+    pump_min_body_atr_long: float = 0.30
+    pump_min_body_atr_short: float = 0.35
+    pump_max_range_atr: float = 3.0
+    pump_breakout_buffer_atr: float = 0.08
+    pump_continuation_min_ratio_long: float = 0.99
+    pump_continuation_max_ratio_short: float = 1.01
 
 
 @dataclass(frozen=True)
@@ -163,10 +169,10 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
         not_exhausted_short = overext <= p.pump_short_max_overext_atr
         recent = df.iloc[-(max(3, p.pump_lookback) + 2) : -1]
         # Quality gates to skip noisy "trash moves".
-        min_body_atr_long = 0.35
-        min_body_atr_short = 0.40
-        max_range_atr = 3.50
-        breakout_buffer_atr = 0.10
+        min_body_atr_long = p.pump_min_body_atr_long
+        min_body_atr_short = p.pump_min_body_atr_short
+        max_range_atr = p.pump_max_range_atr
+        breakout_buffer_atr = p.pump_breakout_buffer_atr
 
         if trend_side == Side.LONG:
             fresh_long = False
@@ -211,7 +217,7 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
             continuation_ok = True
             if breakout_close_long is not None:
                 # Skip setups that instantly faded after breakout candle.
-                continuation_ok = c_last >= (0.985 * breakout_close_long)
+                continuation_ok = c_last >= (p.pump_continuation_min_ratio_long * breakout_close_long)
             if fresh_long and not_exhausted_long and continuation_ok:
                 pump_ok = True
                 pump_reason = "Recent fresh long pump breakout (impulse+volume), avoid late chase"
@@ -255,7 +261,7 @@ def generate_signal(symbol: str, df: pd.DataFrame, p: StrategyParams) -> Signal 
                     break
             continuation_short_ok = True
             if breakout_close_short is not None:
-                continuation_short_ok = c_last <= (1.015 * breakout_close_short)
+                continuation_short_ok = c_last <= (p.pump_continuation_max_ratio_short * breakout_close_short)
             if fresh_short and not_exhausted_short and continuation_short_ok:
                 pump_ok = True
                 pump_reason = "Recent fresh short dump breakout (impulse+volume), avoid late chase"

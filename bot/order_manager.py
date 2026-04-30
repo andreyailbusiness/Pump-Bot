@@ -24,6 +24,11 @@ def _parse_iso(s: str) -> datetime:
 class OrderManager:
     risk: RiskParams
     cooldown_hours: int = 48
+    staged_exits: bool = True
+    stage2_r: float = 3.0
+    stage2_close_ratio: float = 0.5
+    staged_final_r: bool = False
+    stage3_r: float = 5.0
 
     def in_cooldown(self, state: BotState, symbol: str) -> bool:
         until = state.cooldown_until.get(symbol)
@@ -51,6 +56,10 @@ class OrderManager:
             trailing_active=False,
             trailing_sl=None,
             last_price=plan.entry,
+            qty_open=plan.qty,
+            initial_r=abs(plan.entry - plan.sl),
+            be_armed=False,
+            stage2_done=False,
         )
         state.positions[signal.symbol] = pos
         state.trades.append(
@@ -75,6 +84,14 @@ class OrderManager:
         # Do not set pos.last_price here: it is kept in sync with the exchange ticker for uPNL display.
 
         # Trailing activation at +1.5*ATR profit (uses last *closed* bar close for stability)
+        qty_open = float(pos.qty_open if pos.qty_open is not None else pos.qty)
+        if qty_open <= 0:
+            return
+
+        defer_trailing = bool(self.staged_exits) and (pos.initial_r > 0) and (not bool(pos.stage2_done))
+        if defer_trailing:
+            return
+
         if pos.side == "long":
             profit = close_price - pos.entry_price
             if (not pos.trailing_active) and profit >= self.risk.trail_activate_atr_mult * atr_value:
@@ -103,7 +120,16 @@ class OrderManager:
         if not pos:
             return
 
+        qty_open = float(pos.qty_open if pos.qty_open is not None else pos.qty)
+        if qty_open <= 0:
+            return
+
         sl_level = pos.trailing_sl if pos.trailing_active and pos.trailing_sl is not None else pos.sl
+        if pos.be_armed:
+            if pos.side == "long":
+                sl_level = max(sl_level, pos.entry_price)
+            else:
+                sl_level = min(sl_level, pos.entry_price)
         hit: str | None = None
         exit_price = last_price
         hi = float(candle_high) if candle_high is not None else last_price
@@ -118,22 +144,79 @@ class OrderManager:
             if lo <= sl_level:
                 hit = "sl" if not pos.trailing_active else "trailing_sl"
                 exit_price = sl_level
-            elif hi >= pos.tp:
+            elif self.staged_exits and (not pos.stage2_done) and pos.initial_r > 0 and hi >= (pos.entry_price + self.stage2_r * pos.initial_r):
+                close_qty = min(qty_open, float(pos.qty) * float(self.stage2_close_ratio))
+                if close_qty > 0:
+                    stage_px = pos.entry_price + self.stage2_r * pos.initial_r
+                    net = self._pnl_quote(pos, stage_px, qty=close_qty)
+                    state.equity += net
+                    pos.qty_open = max(0.0, qty_open - close_qty)
+                    pos.stage2_done = True
+                    pos.be_armed = True
+                    pos.trailing_active = True
+                    pos.trailing_sl = max(pos.sl, pos.entry_price)
+                    state.trades.append(
+                        {
+                            "time": _iso(_utcnow()),
+                            "type": "partial_close",
+                            "symbol": symbol,
+                            "side": pos.side,
+                            "qty": close_qty,
+                            "entry": pos.entry_price,
+                            "exit": stage_px,
+                            "pnl": net,
+                            "reason": "stage2_tp",
+                        }
+                    )
+                return
+            elif (not self.staged_exits) and hi >= pos.tp:
                 hit = "tp"
                 exit_price = pos.tp
+            elif self.staged_exits and self.staged_final_r and pos.initial_r > 0 and hi >= (pos.entry_price + self.stage3_r * pos.initial_r):
+                hit = "tp"
+                exit_price = pos.entry_price + self.stage3_r * pos.initial_r
         else:
             # Intrabar precedence: stop first, then take-profit.
             if hi >= sl_level:
                 hit = "sl" if not pos.trailing_active else "trailing_sl"
                 exit_price = sl_level
-            elif lo <= pos.tp:
+            elif self.staged_exits and (not pos.stage2_done) and pos.initial_r > 0 and lo <= (pos.entry_price - self.stage2_r * pos.initial_r):
+                close_qty = min(qty_open, float(pos.qty) * float(self.stage2_close_ratio))
+                if close_qty > 0:
+                    stage_px = pos.entry_price - self.stage2_r * pos.initial_r
+                    net = self._pnl_quote(pos, stage_px, qty=close_qty)
+                    state.equity += net
+                    pos.qty_open = max(0.0, qty_open - close_qty)
+                    pos.stage2_done = True
+                    pos.be_armed = True
+                    pos.trailing_active = True
+                    pos.trailing_sl = min(pos.sl, pos.entry_price)
+                    state.trades.append(
+                        {
+                            "time": _iso(_utcnow()),
+                            "type": "partial_close",
+                            "symbol": symbol,
+                            "side": pos.side,
+                            "qty": close_qty,
+                            "entry": pos.entry_price,
+                            "exit": stage_px,
+                            "pnl": net,
+                            "reason": "stage2_tp",
+                        }
+                    )
+                return
+            elif (not self.staged_exits) and lo <= pos.tp:
                 hit = "tp"
                 exit_price = pos.tp
+            elif self.staged_exits and self.staged_final_r and pos.initial_r > 0 and lo <= (pos.entry_price - self.stage3_r * pos.initial_r):
+                hit = "tp"
+                exit_price = pos.entry_price - self.stage3_r * pos.initial_r
 
         if not hit:
             return
 
-        pnl = self._pnl_quote(pos, exit_price)
+        close_qty = float(pos.qty_open if pos.qty_open is not None else pos.qty)
+        pnl = self._pnl_quote(pos, exit_price, qty=close_qty)
         state.equity += pnl
         state.trades.append(
             {
@@ -141,7 +224,7 @@ class OrderManager:
                 "type": "close",
                 "symbol": symbol,
                 "side": pos.side,
-                "qty": pos.qty,
+                "qty": close_qty,
                 "entry": pos.entry_price,
                 "exit": exit_price,
                 "pnl": pnl,
@@ -151,9 +234,10 @@ class OrderManager:
         del state.positions[symbol]
         self.set_cooldown(state, symbol)
 
-    def _pnl_quote(self, pos: Position, exit_price: float) -> float:
+    def _pnl_quote(self, pos: Position, exit_price: float, qty: float | None = None) -> float:
         # Spot-like PnL in quote currency.
+        q = float(pos.qty if qty is None else qty)
         if pos.side == "long":
-            return (exit_price - pos.entry_price) * pos.qty
-        return (pos.entry_price - exit_price) * pos.qty
+            return (exit_price - pos.entry_price) * q
+        return (pos.entry_price - exit_price) * q
 

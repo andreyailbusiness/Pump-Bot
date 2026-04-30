@@ -32,6 +32,10 @@ class Position:
     trailing_active: bool = False
     trailing_sl: float | None = None
     last_price: float | None = None
+    qty_open: float | None = None
+    initial_r: float = 0.0
+    be_armed: bool = False
+    stage2_done: bool = False
 
 
 @dataclass

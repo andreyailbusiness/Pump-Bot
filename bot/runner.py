@@ -327,7 +327,15 @@ def build_runtime(settings: Settings) -> BotRuntime:
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
 
     risk = RiskParams(risk_percent=settings.risk_percent, leverage=settings.leverage)
-    order_manager = OrderManager(risk=risk, cooldown_hours=settings.cooldown_hours)
+    order_manager = OrderManager(
+        risk=risk,
+        cooldown_hours=settings.cooldown_hours,
+        staged_exits=bool(settings.paper_staged_exits),
+        stage2_r=float(settings.paper_stage2_r),
+        stage2_close_ratio=float(settings.paper_stage2_close_ratio),
+        staged_final_r=bool(settings.paper_staged_final_r),
+        stage3_r=float(settings.paper_stage3_r),
+    )
 
     strat_params = StrategyParams(
         ema_period=200,
@@ -350,6 +358,12 @@ def build_runtime(settings: Settings) -> BotRuntime:
         pump_short_close_pos_min=float(settings.pump_short_close_pos_min),
         pump_short_max_overext_atr=float(settings.pump_short_max_overext_atr),
         pump_short_max_opp_wick_ratio=float(settings.pump_short_max_opp_wick_ratio),
+        pump_min_body_atr_long=float(settings.pump_min_body_atr_long),
+        pump_min_body_atr_short=float(settings.pump_min_body_atr_short),
+        pump_max_range_atr=float(settings.pump_max_range_atr),
+        pump_breakout_buffer_atr=float(settings.pump_breakout_buffer_atr),
+        pump_continuation_min_ratio_long=float(settings.pump_continuation_min_ratio_long),
+        pump_continuation_max_ratio_short=float(settings.pump_continuation_max_ratio_short),
     )
 
     return BotRuntime(

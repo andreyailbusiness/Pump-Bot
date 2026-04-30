@@ -1,11 +1,13 @@
 $ErrorActionPreference = "Stop"
 
-# April 1 -> now (UTC), same logic as frozen v2. Edit year in --since if needed.
-# Пример: весь апрель 2026 с 1-го по сегодня.
+param(
+  [int]$Days = 30
+)
 
+# Candidate profile: 15m + stricter filters + staged exits (half at 3R, remainder trailing; no 1R partial, no hard 5R).
 python -m bot.backtester `
-  --timeframe 1h `
-  --since 2026-04-01 `
+  --timeframe 15m `
+  --days $Days `
   --fee 0.0004 `
   --slip-bps 2 `
   --selector pump `
@@ -30,4 +32,7 @@ python -m bot.backtester `
   --daily-lookback-days 14 `
   --daily-score-quantile 0.75 `
   --limit 120 `
+  --strict-filters `
+  --staged-exits `
+  --stage2-r 3 --stage2-close-ratio 0.50 `
   --report-all-months

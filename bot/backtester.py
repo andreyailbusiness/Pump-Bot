@@ -63,10 +63,24 @@ def _s(dt: datetime) -> int:
     return int(dt.timestamp())
 
 
-def fetch_futures_history_1h(client: MexcFuturesClient, symbol: str, days: int) -> pd.DataFrame:
+def _timeframe_to_mexc_interval(timeframe: str) -> str:
+    if timeframe == "15m":
+        return "Min15"
+    return "Min60"
+
+
+def _bars_per_day(timeframe: str) -> int:
+    if timeframe == "15m":
+        return 96
+    return 24
+
+
+def fetch_futures_history(client: MexcFuturesClient, symbol: str, days: int, timeframe: str = "1h") -> pd.DataFrame:
     """
-    Futures: fetches up to `days` of 1h candles by paging contract klines (max 2000 points per call).
-    Interval for 1h: Min60.
+    Futures: fetches up to `days` of candles by paging contract klines (max 2000 points per call).
+
+    MEXC returns at most 2000 bars per request; for long ranges we page **backward** from `end`
+    (same pattern as many exchanges: each window ends just before the previous chunk's first bar).
     """
     end = _utcnow()
     start = end - timedelta(days=days)
@@ -74,21 +88,21 @@ def fetch_futures_history_1h(client: MexcFuturesClient, symbol: str, days: int) 
     end_s = _s(end)
 
     out: list[pd.DataFrame] = []
-    cursor = start_s
+    chunk_end = end_s
     safety = 0
 
-    while cursor < end_s and safety < 1000:
+    while chunk_end > start_s and safety < 1000:
         safety += 1
-        df = client.contract_klines(symbol, interval="Min60", start_s=cursor, end_s=end_s)
+        df = client.contract_klines(
+            symbol, interval=_timeframe_to_mexc_interval(timeframe), start_s=start_s, end_s=chunk_end
+        )
         if df.empty:
             break
         out.append(df)
-        last_open = int(df["open_time_s"].iloc[-1])
-        if last_open <= cursor:
+        first_open = int(df["open_time_s"].iloc[0])
+        if first_open <= start_s:
             break
-        cursor = last_open + 1
-
-        # If less than max returned, we've likely reached the end.
+        chunk_end = first_open - 1
         if df.shape[0] < 2000:
             break
 
@@ -97,6 +111,12 @@ def fetch_futures_history_1h(client: MexcFuturesClient, symbol: str, days: int) 
 
     full = pd.concat(out).sort_index()
     full = full[~full.index.duplicated(keep="last")]
+    ts0 = pd.Timestamp(start)
+    if ts0.tzinfo is None:
+        ts0 = ts0.tz_localize("UTC")
+    else:
+        ts0 = ts0.tz_convert("UTC")
+    full = full[full.index >= ts0]
     return full
 
 
@@ -138,16 +158,22 @@ def _cache_dir() -> str:
     return d
 
 
-def load_cached_df(symbol: str, days: int) -> pd.DataFrame | None:
-    path = os.path.join(_cache_dir(), f"futures_1h_{symbol}_{days}d.pkl")
+def _futures_cache_fname(symbol: str, days: int, timeframe: str) -> str:
+    tf_tag = timeframe.replace("/", "_")
+    # v2: multi-page klines fetch (older caches were truncated to one 2000-bar page).
+    return os.path.join(_cache_dir(), f"futures_{tf_tag}_{symbol}_{days}d_v2.pkl")
+
+
+def load_cached_df(symbol: str, days: int, timeframe: str = "1h") -> pd.DataFrame | None:
+    path = _futures_cache_fname(symbol, days, timeframe)
     try:
         return pd.read_pickle(path)
     except Exception:
         return None
 
 
-def save_cached_df(symbol: str, days: int, df: pd.DataFrame) -> None:
-    path = os.path.join(_cache_dir(), f"futures_1h_{symbol}_{days}d.pkl")
+def save_cached_df(symbol: str, days: int, df: pd.DataFrame, timeframe: str = "1h") -> None:
+    path = _futures_cache_fname(symbol, days, timeframe)
     try:
         df.to_pickle(path)
     except Exception:
@@ -235,6 +261,7 @@ def backtest_symbol(
     risk_percent_weak: float | None = None,
     entry_mode_strong: str | None = None,
     entry_mode_weak: str | None = None,
+    bars_per_day: int = 24,
 ) -> BtResult:
     equity = 1000.0
     peak = equity
@@ -252,15 +279,16 @@ def backtest_symbol(
     tranche_risk = tranche_risk_percent(risk.risk_percent, risk.pyramids_max)
 
     monthly_pnl: dict[str, float] = {}
-    if df.shape[0] < 300:
+    warmup_bars = max(250, bars_per_day * 10)
+    if df.shape[0] < warmup_bars + 2:
         return BtResult(symbol, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, {})
 
     atr_series = atr_fn(df, strat.atr_period)
     adx_series = adx_fn(df, strat.adx_period)
-    move_24h = df["close"].pct_change(24).abs()
+    move_24h = df["close"].pct_change(bars_per_day).abs()
 
     # Walk forward; generate_signal expects "last candle forming", so we pass slices and treat i as "now".
-    for i in range(250, len(df) - 1):
+    for i in range(warmup_bars, len(df) - 1):
         window = df.iloc[: i + 1]
         last_closed = window.iloc[-2]
         last_close = float(last_closed["close"])
@@ -548,8 +576,8 @@ def backtest_symbol(
     return BtResult(symbol, trades, wins, losses, roi, max_dd, profit_factor, avg_trade_pnl, sharpe_trades, trades_per_month, monthly_pnl)
 
 
-def _compute_dynamic_score(sub: pd.DataFrame) -> float:
-    if sub.shape[0] < 120:
+def _compute_dynamic_score(sub: pd.DataFrame, bars_per_day: int = 24) -> float:
+    if sub.shape[0] < max(120, bars_per_day * 5):
         return -1e9
     daily_close = sub["close"].resample("1D").last().dropna()
     daily_ret = daily_close.pct_change().dropna()
@@ -563,8 +591,8 @@ def _compute_dynamic_score(sub: pd.DataFrame) -> float:
         ],
         axis=1,
     ).max(axis=1)
-    atr_pct = float((tr.rolling(24).mean() / sub["close"]).dropna().tail(24).mean() or 0.0)
-    brk = float(sub["close"].pct_change(24).dropna().tail(24 * 3).max() or 0.0)
+    atr_pct = float((tr.rolling(bars_per_day).mean() / sub["close"]).dropna().tail(bars_per_day).mean() or 0.0)
+    brk = float(sub["close"].pct_change(bars_per_day).dropna().tail(bars_per_day * 3).max() or 0.0)
     # Local score (without cross-sectional normalization): enough for ranking each day.
     return 2.0 * pump_count + 80.0 * atr_pct + 10.0 * brk
 
@@ -597,6 +625,14 @@ def backtest_portfolio_daily_reselect(
     entry_mode_weak: str | None = None,
     trade_range_start: pd.Timestamp | None = None,
     trade_range_end: pd.Timestamp | None = None,
+    bars_per_day: int = 24,
+    staged_exits: bool = False,
+    stage1_r: float = 1.0,
+    stage1_close_ratio: float = 0.0,
+    stage2_r: float = 3.0,
+    stage2_close_ratio: float = 0.50,
+    stage3_r: float = 5.0,
+    staged_use_final_r: bool = False,
 ) -> PortfolioResult:
     start_equity = 1000.0
     equity = start_equity
@@ -622,7 +658,7 @@ def backtest_portfolio_daily_reselect(
 
     atr_cache = {s: atr_fn(df, strat.atr_period) for s, df in symbol_dfs.items()}
     adx_cache = {s: adx_fn(df, strat.adx_period) for s, df in symbol_dfs.items()}
-    move24_cache = {s: df["close"].pct_change(24).abs() for s, df in symbol_dfs.items()}
+    move24_cache = {s: df["close"].pct_change(bars_per_day).abs() for s, df in symbol_dfs.items()}
 
     timeline = sorted(set().union(*[set(df.index.tolist()) for df in symbol_dfs.values()]))
     if trade_range_start is not None:
@@ -637,10 +673,10 @@ def backtest_portfolio_daily_reselect(
             last_day = day
             scored: list[tuple[str, float]] = []
             for sym, df in symbol_dfs.items():
-                sub = df[df.index <= ts].tail(lookback_days * 24 + 10)
+                sub = df[df.index <= ts].tail(lookback_days * bars_per_day + 10)
                 if sub.shape[0] < 120:
                     continue
-                score = _compute_dynamic_score(sub)
+                score = _compute_dynamic_score(sub, bars_per_day=bars_per_day)
                 scored.append((sym, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             if scored:
@@ -707,7 +743,11 @@ def backtest_portfolio_daily_reselect(
                         applied_funding[sym].add(settle_ms)
 
             atr_val = float(atr_cache[sym].iloc[idx]) if not pd.isna(atr_cache[sym].iloc[idx]) else 0.0
-            if atr_val > 0:
+            # With "no 1R partial" staged profile, defer ATR trailing until after the 3R partial so the move can breathe.
+            defer_trailing = bool(staged_exits) and (float(stage1_close_ratio) <= 0.0) and (
+                not bool(pos.get("stage2_done", False))
+            )
+            if atr_val > 0 and not defer_trailing:
                 if pos["side"] == "long":
                     profit = last_close - float(pos["entry"])
                     if (not bool(pos["trailing_active"])) and profit >= risk.trail_activate_atr_mult * atr_val:
@@ -724,29 +764,100 @@ def backtest_portfolio_daily_reselect(
                         pos["trailing_sl"] = min(float(pos["trailing_sl"]), last_close + risk.trail_dist_atr_mult * atr_val)
 
             sl_level = float(pos["trailing_sl"]) if bool(pos["trailing_active"]) else float(pos["sl"])
-            tp_level = float(pos["tp"])
+            if bool(pos.get("be_armed", False)):
+                be = float(pos["entry_exec"])
+                if pos["side"] == "long":
+                    sl_level = max(sl_level, be)
+                else:
+                    sl_level = min(sl_level, be)
+
             hit = None
             exit_price = None
             if pos["side"] == "long":
-                if (last_low <= sl_level) and (last_high >= tp_level):
+                if last_low <= sl_level:
                     hit = "sl"
                     exit_price = sl_level
-                elif last_low <= sl_level:
-                    hit = "sl"
-                    exit_price = sl_level
-                elif last_high >= tp_level:
-                    hit = "tp"
-                    exit_price = tp_level
             else:
-                if (last_high >= sl_level) and (last_low <= tp_level):
+                if last_high >= sl_level:
                     hit = "sl"
                     exit_price = sl_level
-                elif last_high >= sl_level:
-                    hit = "sl"
-                    exit_price = sl_level
-                elif last_low <= tp_level:
-                    hit = "tp"
-                    exit_price = tp_level
+
+            # Staged take-profits (1R / 3R / 5R) are processed only if SL did not hit this candle.
+            if staged_exits and (hit is None):
+                init_r = float(pos.get("initial_r", 0.0))
+                if init_r > 0 and float(pos["qty_open"]) > 0:
+                    e = float(pos["entry_exec"])
+                    if pos["side"] == "long":
+                        stage1_hit = (not bool(pos.get("stage1_done", False))) and (last_high >= e + stage1_r * init_r)
+                        stage2_hit = (not bool(pos.get("stage2_done", False))) and (last_high >= e + stage2_r * init_r)
+                        stage3_hit = (not bool(pos.get("stage3_done", False))) and (last_high >= e + stage3_r * init_r)
+                    else:
+                        stage1_hit = (not bool(pos.get("stage1_done", False))) and (last_low <= e - stage1_r * init_r)
+                        stage2_hit = (not bool(pos.get("stage2_done", False))) and (last_low <= e - stage2_r * init_r)
+                        stage3_hit = (not bool(pos.get("stage3_done", False))) and (last_low <= e - stage3_r * init_r)
+
+                    def _close_partial(close_qty: float, raw_exit_price: float) -> float:
+                        nonlocal equity
+                        if close_qty <= 0:
+                            return 0.0
+                        exec_px = _apply_slippage(raw_exit_price, str(pos["side"]), slippage_bps, is_entry=False)
+                        fee_px = _fee(close_qty * exec_px, taker_fee_rate)
+                        pnl_px = (exec_px - e) * close_qty if pos["side"] == "long" else (e - exec_px) * close_qty
+                        net_px = pnl_px - fee_px
+                        equity += net_px
+                        return net_px
+
+                    if stage1_hit:
+                        q = min(float(pos["qty_open"]), float(pos["qty"]) * float(stage1_close_ratio))
+                        stage1_price = e + stage1_r * init_r if pos["side"] == "long" else e - stage1_r * init_r
+                        net_px = _close_partial(q, stage1_price)
+                        pos["qty_open"] = max(0.0, float(pos["qty_open"]) - q)
+                        pos["stage1_done"] = True
+                        if q > 0:
+                            pos["be_armed"] = True
+                            trade_pnls.append(net_px)
+                            m = str(ts.tz_convert(None).to_period("M")) if getattr(ts, "tzinfo", None) is not None else str(ts.to_period("M"))
+                            trade_months.append(m)
+                            monthly_pnl[m] = monthly_pnl.get(m, 0.0) + float(net_px)
+                            symbol_pnl[sym] = symbol_pnl.get(sym, 0.0) + float(net_px)
+                            if sym not in symbol_monthly_pnl:
+                                symbol_monthly_pnl[sym] = {}
+                            symbol_monthly_pnl[sym][m] = symbol_monthly_pnl[sym].get(m, 0.0) + float(net_px)
+
+                    if stage2_hit:
+                        q = min(float(pos["qty_open"]), float(pos["qty"]) * float(stage2_close_ratio))
+                        stage2_price = e + stage2_r * init_r if pos["side"] == "long" else e - stage2_r * init_r
+                        net_px = _close_partial(q, stage2_price)
+                        pos["qty_open"] = max(0.0, float(pos["qty_open"]) - q)
+                        pos["stage2_done"] = True
+                        pos["be_armed"] = True
+                        pos["trailing_active"] = True
+                        if q > 0:
+                            trade_pnls.append(net_px)
+                            m = str(ts.tz_convert(None).to_period("M")) if getattr(ts, "tzinfo", None) is not None else str(ts.to_period("M"))
+                            trade_months.append(m)
+                            monthly_pnl[m] = monthly_pnl.get(m, 0.0) + float(net_px)
+                            symbol_pnl[sym] = symbol_pnl.get(sym, 0.0) + float(net_px)
+                            if sym not in symbol_monthly_pnl:
+                                symbol_monthly_pnl[sym] = {}
+                            symbol_monthly_pnl[sym][m] = symbol_monthly_pnl[sym].get(m, 0.0) + float(net_px)
+
+                    if bool(staged_use_final_r) and stage3_hit:
+                        stage3_price = e + stage3_r * init_r if pos["side"] == "long" else e - stage3_r * init_r
+                        pos["stage3_done"] = True
+                        hit = "tp"
+                        exit_price = stage3_price
+            elif hit is None:
+                # Legacy single TP behavior.
+                tp_level = float(pos["tp"])
+                if pos["side"] == "long":
+                    if last_high >= tp_level:
+                        hit = "tp"
+                        exit_price = tp_level
+                else:
+                    if last_low <= tp_level:
+                        hit = "tp"
+                        exit_price = tp_level
 
             if hit:
                 exec_exit = _apply_slippage(float(exit_price), str(pos["side"]), slippage_bps, is_entry=False)
@@ -794,7 +905,7 @@ def backtest_portfolio_daily_reselect(
             if ts not in df.index:
                 continue
             idx = df.index.get_loc(ts)
-            if idx < 250:
+            if idx < max(250, bars_per_day * 10):
                 continue
             window = df.iloc[: idx + 1]
             adx_val = float(adx_cache[sym].iloc[idx]) if not pd.isna(adx_cache[sym].iloc[idx]) else 0.0
@@ -854,6 +965,7 @@ def backtest_portfolio_daily_reselect(
             equity -= fee_entry
             positions[sym] = {
                 "side": sig.side.value,
+                "qty": plan.qty,
                 "qty_open": plan.qty,
                 "entry": plan.entry,
                 "entry_exec": entry_exec,
@@ -861,6 +973,11 @@ def backtest_portfolio_daily_reselect(
                 "tp": plan.tp,
                 "trailing_active": False,
                 "trailing_sl": plan.sl,
+                "initial_r": abs(entry_exec - plan.sl),
+                "be_armed": False,
+                "stage1_done": False,
+                "stage2_done": False,
+                "stage3_done": False,
             }
 
     roi = (equity - start_equity) / start_equity
@@ -908,6 +1025,7 @@ def main() -> None:
     ap.add_argument("--reverse-max-move-24h", type=float, default=0.08, help="Reverse-mode max abs 24h move.")
     ap.add_argument("--pyramids-max", type=int, default=0, help="Max add-ons per position. Use 0 for safer mode.")
     ap.add_argument("--partial-tp-ratio", type=float, default=0.5, help="Fraction to close at TP1 (e.g., 0.5).")
+    ap.add_argument("--timeframe", choices=["1h", "15m"], default="1h", help="Backtest candle timeframe.")
     ap.add_argument("--entry-mode", choices=["retest", "momentum", "hybrid", "pump"], default="hybrid", help="Signal style.")
     ap.add_argument("--rr", type=float, default=3.0, help="Risk/reward ratio for TP distance.")
     ap.add_argument("--sl-atr-mult", type=float, default=1.0, help="Stop-loss distance in ATR multiples.")
@@ -958,6 +1076,22 @@ def main() -> None:
     )
     ap.add_argument("--report-all-months", action="store_true", help="Print all months in range, including zero-PnL months.")
     ap.add_argument("--report-symbol-month", type=str, default="", help="Print per-symbol PnL for a month, e.g. 2026-02.")
+    ap.add_argument("--strict-filters", action="store_true", help="Experimental: tighten entry filters to reduce trade count.")
+    ap.add_argument(
+        "--staged-exits",
+        action="store_true",
+        help="Staged exits: default no partial at 1R; 50%% at 3R + BE floor + trailing; remainder exits via trailing/SL (no hard 5R unless --staged-final-r).",
+    )
+    ap.add_argument("--stage1-r", type=float, default=1.0, help="R-multiple for optional stage1 partial (off when --stage1-close-ratio 0).")
+    ap.add_argument("--stage1-close-ratio", type=float, default=0.0, help="Stage1 close fraction of initial qty (0 = skip 1R partial).")
+    ap.add_argument("--stage2-r", type=float, default=3.0, help="R-multiple for stage2 partial close.")
+    ap.add_argument("--stage2-close-ratio", type=float, default=0.50, help="Stage2 close fraction of initial qty.")
+    ap.add_argument("--stage3-r", type=float, default=5.0, help="R-multiple for optional final limit close (only with --staged-final-r).")
+    ap.add_argument(
+        "--staged-final-r",
+        action="store_true",
+        help="Also force-close any remainder at stage3 R-multiple (legacy 5R target). Default is trailing-only for the remainder.",
+    )
     ap.add_argument(
         "--universe-source",
         choices=["ticker", "detail"],
@@ -983,6 +1117,7 @@ def main() -> None:
         help="Days of history before --since for EMA/ATR (default 45).",
     )
     args = ap.parse_args()
+    bars_per_day = _bars_per_day(str(args.timeframe))
 
     if args.since.strip():
         since_d = _parse_iso_day_utc(args.since)
@@ -992,7 +1127,11 @@ def main() -> None:
         else:
             end_ref = _utcnow()
         span_days = max(1, (end_ref - since_d).days + int(args.warmup_days) + 10)
-        args.days = max(int(args.days), span_days)
+        # fetch_futures_history loads [now-days, now]; must extend back to warmup start (since - warmup)
+        hs_fetch = since_d - timedelta(days=max(1, int(args.warmup_days)))
+        tail = _utcnow()
+        depth_days = max(1, max(0, (tail - hs_fetch).days) + 14)
+        args.days = max(int(args.days), span_days, depth_days)
 
     s = get_settings()
     client = MexcFuturesClient(base_url=s.mexc_base_url)
@@ -1053,7 +1192,39 @@ def main() -> None:
         boll_std=s.boll_std,
         pullback_lookback=10,
         entry_mode=args.entry_mode,
+        pump_lookback=int(s.pump_lookback),
+        pump_min_ret_1h=float(s.pump_min_ret_1h),
+        pump_volume_mult=float(s.pump_volume_mult),
+        pump_close_pos_min=float(s.pump_close_pos_min),
+        pump_max_overext_atr=float(s.pump_max_overext_atr),
+        pump_max_opp_wick_ratio=float(s.pump_max_opp_wick_ratio),
+        pump_short_min_ret_1h=float(s.pump_short_min_ret_1h),
+        pump_short_volume_mult=float(s.pump_short_volume_mult),
+        pump_short_close_pos_min=float(s.pump_short_close_pos_min),
+        pump_short_max_overext_atr=float(s.pump_short_max_overext_atr),
+        pump_short_max_opp_wick_ratio=float(s.pump_short_max_opp_wick_ratio),
+        pump_min_body_atr_long=float(s.pump_min_body_atr_long),
+        pump_min_body_atr_short=float(s.pump_min_body_atr_short),
+        pump_max_range_atr=float(s.pump_max_range_atr),
+        pump_breakout_buffer_atr=float(s.pump_breakout_buffer_atr),
+        pump_continuation_min_ratio_long=float(s.pump_continuation_min_ratio_long),
+        pump_continuation_max_ratio_short=float(s.pump_continuation_max_ratio_short),
     )
+    if bool(args.strict_filters):
+        strat = replace(
+            strat,
+            adx_threshold=max(float(strat.adx_threshold), 28.0),
+            atr_min_pct=max(float(strat.atr_min_pct), 0.006),
+            pump_min_ret_1h=max(float(strat.pump_min_ret_1h), 0.020),
+            pump_volume_mult=max(float(strat.pump_volume_mult), 1.8),
+            pump_close_pos_min=max(float(strat.pump_close_pos_min), 0.66),
+            pump_min_body_atr_long=max(float(strat.pump_min_body_atr_long), 0.36),
+            pump_min_body_atr_short=max(float(strat.pump_min_body_atr_short), 0.42),
+            pump_max_range_atr=min(float(strat.pump_max_range_atr), 2.6),
+            pump_breakout_buffer_atr=max(float(strat.pump_breakout_buffer_atr), 0.12),
+            pump_continuation_min_ratio_long=max(float(strat.pump_continuation_min_ratio_long), 0.995),
+            pump_continuation_max_ratio_short=min(float(strat.pump_continuation_max_ratio_short), 1.008),
+        )
     risk = RiskParams(
         risk_percent=s.risk_percent,
         leverage=s.leverage,
@@ -1074,11 +1245,11 @@ def main() -> None:
         for idx, sym in enumerate(symbols, start=1):
             try:
                 print(f"[{idx}/{len(symbols)}] {sym} loading history for daily-reselect…", flush=True)
-                df = load_cached_df(sym, args.days)
+                df = load_cached_df(sym, args.days, timeframe=str(args.timeframe))
                 if df is None or df.empty:
-                    df = fetch_futures_history_1h(client, sym, args.days)
+                    df = fetch_futures_history(client, sym, args.days, timeframe=str(args.timeframe))
                     if not df.empty:
-                        save_cached_df(sym, args.days, df)
+                        save_cached_df(sym, args.days, df, timeframe=str(args.timeframe))
                 if df.empty:
                     continue
                 symbol_dfs[sym] = df
@@ -1151,12 +1322,22 @@ def main() -> None:
             entry_mode_weak=(str(args.entry_mode_weak) if args.entry_mode_weak else None),
             trade_range_start=trade_range_start,
             trade_range_end=trade_range_end,
+            bars_per_day=bars_per_day,
+            staged_exits=bool(args.staged_exits),
+            stage1_r=float(args.stage1_r),
+            stage1_close_ratio=float(args.stage1_close_ratio),
+            stage2_r=float(args.stage2_r),
+            stage2_close_ratio=float(args.stage2_close_ratio),
+            stage3_r=float(args.stage3_r),
+            staged_use_final_r=bool(args.staged_final_r),
         )
         winrate = (pr.wins / pr.trades) if pr.trades else 0.0
         print(
-            f"Costs model: taker_fee={fee} | slippage_bps={slip} | mode={('reverse' if bool(args.reverse_signals) else args.mode)} "
+            f"Costs model: taker_fee={fee} | slippage_bps={slip} | tf={args.timeframe} "
+            f"| mode={('reverse' if bool(args.reverse_signals) else args.mode)} "
             f"| daily_reselect=True top_n={int(args.daily_top_n)} lookback_days={int(args.daily_lookback_days)} "
-            f"score_q={float(args.daily_score_quantile):.2f}"
+            f"score_q={float(args.daily_score_quantile):.2f} "
+            f"| strict_filters={bool(args.strict_filters)} | staged_exits={bool(args.staged_exits)}"
         )
         print(f"Portfolio trades: {pr.trades} | Winrate: {winrate*100:.1f}%")
         print(
@@ -1201,11 +1382,11 @@ def main() -> None:
     for idx, sym in enumerate(symbols, start=1):
         try:
             print(f"[{idx}/{len(symbols)}] {sym} downloading 1h history…", flush=True)
-            df = load_cached_df(sym, args.days)
+            df = load_cached_df(sym, args.days, timeframe=str(args.timeframe))
             if df is None or df.empty:
-                df = fetch_futures_history_1h(client, sym, args.days)
+                df = fetch_futures_history(client, sym, args.days, timeframe=str(args.timeframe))
                 if not df.empty:
-                    save_cached_df(sym, args.days, df)
+                    save_cached_df(sym, args.days, df, timeframe=str(args.timeframe))
             if df.empty:
                 print(f"[{idx}/{len(symbols)}] {sym} skip: no candles", flush=True)
                 continue
@@ -1237,6 +1418,7 @@ def main() -> None:
                 risk_percent_weak=(float(args.risk_percent_weak) if args.risk_percent_weak is not None else None),
                 entry_mode_strong=(str(args.entry_mode_strong) if args.entry_mode_strong else None),
                 entry_mode_weak=(str(args.entry_mode_weak) if args.entry_mode_weak else None),
+                bars_per_day=bars_per_day,
             )
             results.append(r)
             print(
