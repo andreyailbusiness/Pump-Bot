@@ -11,9 +11,10 @@ import pandas as pd
 
 from .config import Settings
 from .exchange import MexcClient, MexcFuturesClient
+from .live_execution import LiveExecution
 from .order_manager import OrderManager
-from .risk_manager import RiskParams, build_order_plan
-from .state import BotState, StateStore
+from .risk_manager import OrderPlan, RiskParams, build_order_plan
+from .state import BotState, Position, StateStore
 from .strategy import StrategyParams, generate_signal
 from .symbols import TopSymbolsCache, get_futures_candidates_with_turnover, get_top_symbols_by_quote_volume
 from .telegram_notifier import TelegramNotifier
@@ -87,6 +88,79 @@ def _refresh_open_positions_last_price(rt: BotRuntime, symbols: Iterable[str]) -
         return
 
 
+def _live_mode_active(rt: BotRuntime) -> bool:
+    return bool(rt.settings.trading_mode == "live" and rt.settings.live_enabled and rt.live_exec is not None)
+
+
+def _daily_realized_pnl(state: BotState) -> float:
+    today = datetime.now(timezone.utc).date()
+    total = 0.0
+    for t in state.trades:
+        if t.get("type") not in {"close", "partial_close"}:
+            continue
+        ts = _parse_iso(str(t.get("time", "")))
+        if ts is None:
+            continue
+        if ts.date() == today:
+            total += float(t.get("pnl", 0.0) or 0.0)
+    return total
+
+
+def _ccxt_to_internal_symbol(ccxt_symbol: str) -> str:
+    # e.g. RAVE/USDT:USDT -> RAVE_USDT
+    left = ccxt_symbol.split(":")[0]
+    return left.replace("/", "_")
+
+
+async def sync_live_positions(rt: BotRuntime) -> None:
+    if not _live_mode_active(rt):
+        return
+    assert rt.live_exec is not None
+    try:
+        rows = await asyncio.to_thread(rt.live_exec.fetch_open_positions)
+    except Exception:
+        return
+
+    for p in rows:
+        sym = _ccxt_to_internal_symbol(str(p.get("symbol", "")))
+        if not sym:
+            continue
+        contracts = float(p.get("contracts") or 0.0)
+        if contracts <= 0:
+            continue
+        side = str(p.get("side", "")).lower()
+        side = "long" if side == "long" else "short"
+        entry = float(p.get("entryPrice") or p.get("entry") or p.get("markPrice") or 0.0)
+        mark = float(p.get("markPrice") or p.get("lastPrice") or entry or 0.0)
+        if entry <= 0:
+            continue
+        pos = rt.state.positions.get(sym)
+        if pos is None:
+            init_r = max(abs(entry) * 0.02, 1e-9)
+            rt.state.positions[sym] = Position(
+                symbol=sym,
+                side=side,  # type: ignore[arg-type]
+                qty=contracts,
+                entry_price=entry,
+                entry_time=datetime.now(timezone.utc).isoformat(),
+                sl=(entry - init_r if side == "long" else entry + init_r),
+                tp=(entry + 3.0 * init_r if side == "long" else entry - 3.0 * init_r),
+                trailing_active=False,
+                trailing_sl=None,
+                last_price=mark,
+                qty_open=contracts,
+                initial_r=init_r,
+                be_armed=False,
+                stage2_done=False,
+            )
+            pos = rt.state.positions[sym]
+        pos.side = side  # type: ignore[assignment]
+        pos.qty = contracts
+        pos.last_price = mark
+        if pos.qty_open is None:
+            pos.qty_open = contracts
+
+
 @dataclass
 class BotRuntime:
     settings: Settings
@@ -96,6 +170,7 @@ class BotRuntime:
     notifier: TelegramNotifier
     order_manager: OrderManager
     strat_params: StrategyParams
+    live_exec: LiveExecution | None = None
 
     def save(self) -> None:
         self.state_store.save(self.state)
@@ -179,6 +254,11 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
         return
     if rt.state.max_drawdown_reached(rt.settings.max_drawdown):
         return
+    if _live_mode_active(rt):
+        if len(rt.state.positions) >= int(rt.settings.live_max_positions):
+            return
+        if _daily_realized_pnl(rt.state) <= -abs(float(rt.settings.live_daily_loss_limit_usdt)):
+            return
 
     df = await fetch_klines(rt.client, symbol, rt.settings.timeframe, rt.settings.candles_limit)
     strat = rt.strat_params if not entry_mode else replace(rt.strat_params, entry_mode=entry_mode)
@@ -204,6 +284,31 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
     )
     if not plan:
         return
+
+    if _live_mode_active(rt):
+        assert rt.live_exec is not None
+        max_notional = max(0.0, float(rt.settings.live_max_notional_usdt))
+        if max_notional <= 0:
+            return
+        capped_qty = min(float(plan.qty), max_notional / max(float(plan.entry), 1e-12))
+        qty_live = await asyncio.to_thread(rt.live_exec.normalize_amount, symbol, capped_qty)
+        if qty_live <= 0:
+            return
+        try:
+            live_order = await asyncio.to_thread(rt.live_exec.market_open, symbol, sig.side.value, qty_live)
+        except Exception as exc:
+            rt.notifier.send(f"⚠️ LIVE open failed: {symbol} {sig.side.value} err={exc}")
+            return
+
+        # Use exchange-reported fill price when available.
+        avg_px = float(live_order.get("average") or live_order.get("price") or plan.entry)
+        plan = OrderPlan(
+            side=plan.side,
+            qty=float(qty_live),
+            entry=float(avg_px),
+            sl=float(avg_px - open_risk.sl_atr_mult * sig.atr if sig.side.value == "long" else avg_px + open_risk.sl_atr_mult * sig.atr),
+            tp=float(avg_px + open_risk.rr * open_risk.sl_atr_mult * sig.atr if sig.side.value == "long" else avg_px - open_risk.rr * open_risk.sl_atr_mult * sig.atr),
+        )
 
     rt.order_manager.open_position_paper(rt.state, sig, plan)
     rt.save()
@@ -256,7 +361,29 @@ async def update_positions(rt: BotRuntime, symbols: Iterable[str]) -> None:
                 mark_price=mark_px,
             )
             if len(rt.state.trades) > before_n:
-                last_trade = rt.state.trades[-1]
+                new_trades = rt.state.trades[before_n:]
+                for tr in new_trades:
+                    if str(tr.get("symbol")) != sym:
+                        continue
+                    ttype = str(tr.get("type", ""))
+                    if _live_mode_active(rt) and ttype in {"close", "partial_close"}:
+                        try:
+                            qty_live = await asyncio.to_thread(
+                                rt.live_exec.normalize_amount,  # type: ignore[union-attr]
+                                sym,
+                                float(tr.get("qty", 0.0) or 0.0),
+                            )
+                            if qty_live > 0:
+                                await asyncio.to_thread(
+                                    rt.live_exec.market_reduce,  # type: ignore[union-attr]
+                                    sym,
+                                    str(tr.get("side", "")),
+                                    qty_live,
+                                )
+                        except Exception as exc:
+                            rt.notifier.send(f"⚠️ LIVE close failed: {sym} type={ttype} err={exc}")
+
+                last_trade = new_trades[-1]
                 if last_trade.get("type") == "close" and str(last_trade.get("symbol")) == sym:
                     reason = str(last_trade.get("reason", ""))
                     pnl = float(last_trade.get("pnl", 0.0) or 0.0)
@@ -325,6 +452,18 @@ def build_runtime(settings: Settings) -> BotRuntime:
     state_store = StateStore(path=settings.state_path)
     state = state_store.load()
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
+    live_exec: LiveExecution | None = None
+    if settings.trading_mode == "live":
+        if settings.live_enabled and settings.mexc_api_key and settings.mexc_api_secret:
+            try:
+                live_exec = LiveExecution(
+                    api_key=str(settings.mexc_api_key),
+                    api_secret=str(settings.mexc_api_secret),
+                )
+            except Exception as exc:
+                print(f"[live] init failed, fallback to paper behavior: {exc}", flush=True)
+        else:
+            print("[live] TRADING_MODE=live but LIVE_ENABLED/api keys are missing. Orders are disabled.", flush=True)
 
     risk = RiskParams(risk_percent=settings.risk_percent, leverage=settings.leverage)
     order_manager = OrderManager(
@@ -374,6 +513,7 @@ def build_runtime(settings: Settings) -> BotRuntime:
         notifier=notifier,
         order_manager=order_manager,
         strat_params=strat_params,
+        live_exec=live_exec,
     )
 
 
@@ -382,6 +522,7 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
 
     while True:
         try:
+            await sync_live_positions(rt)
             # Update existing positions first
             await update_positions(rt, list(rt.state.positions.keys()))
 

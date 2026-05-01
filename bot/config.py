@@ -8,7 +8,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = Field(default="dev", alias="APP_ENV")
-    trading_mode: str = Field(default="paper", alias="TRADING_MODE")  # paper|live (live not implemented)
+    trading_mode: str = Field(default="paper", alias="TRADING_MODE")  # paper|live
+    mexc_api_key: str | None = Field(default=None, alias="MEXC_API_KEY")
+    mexc_api_secret: str | None = Field(default=None, alias="MEXC_API_SECRET")
 
     mexc_base_url: str = Field(default="https://api.mexc.com", alias="MEXC_BASE_URL")
     quote_asset: str = Field(default="USDT", alias="QUOTE_ASSET")
@@ -77,6 +79,10 @@ class Settings(BaseSettings):
     cooldown_hours: int = Field(default=48, alias="COOLDOWN_HOURS")
     loss_streak_block_threshold: int = Field(default=2, alias="LOSS_STREAK_BLOCK_THRESHOLD")
     loss_streak_block_hours: int = Field(default=72, alias="LOSS_STREAK_BLOCK_HOURS")
+    live_enabled: bool = Field(default=False, alias="LIVE_ENABLED")
+    live_max_notional_usdt: float = Field(default=3.0, alias="LIVE_MAX_NOTIONAL_USDT")
+    live_max_positions: int = Field(default=1, alias="LIVE_MAX_POSITIONS")
+    live_daily_loss_limit_usdt: float = Field(default=2.0, alias="LIVE_DAILY_LOSS_LIMIT_USDT")
     paper_staged_exits: bool = Field(default=True, alias="PAPER_STAGED_EXITS")
     paper_stage2_r: float = Field(default=3.0, alias="PAPER_STAGE2_R")
     paper_stage2_close_ratio: float = Field(default=0.50, alias="PAPER_STAGE2_CLOSE_RATIO")

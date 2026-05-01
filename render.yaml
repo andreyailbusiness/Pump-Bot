@@ -9,6 +9,8 @@ services:
     envVars:
       - key: TRADING_MODE
         value: paper
+      - key: LIVE_ENABLED
+        value: "false"
       - key: QUOTE_ASSET
         value: USDT
       - key: MARKET_TYPE
@@ -113,6 +115,12 @@ services:
         value: "2"
       - key: LOSS_STREAK_BLOCK_HOURS
         value: "72"
+      - key: LIVE_MAX_NOTIONAL_USDT
+        value: "3.0"
+      - key: LIVE_MAX_POSITIONS
+        value: "1"
+      - key: LIVE_DAILY_LOSS_LIMIT_USDT
+        value: "2.0"
       - key: PAPER_STAGED_EXITS
         value: "true"
       - key: PAPER_STAGE2_R

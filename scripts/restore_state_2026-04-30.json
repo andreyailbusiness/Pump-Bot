@@ -1,0 +1,119 @@
+{
+  "equity": 985.0,
+  "start_equity": 1000.0,
+  "positions": {
+    "RAVE_USDT": {
+      "symbol": "RAVE_USDT",
+      "side": "short",
+      "qty": 646.352724,
+      "entry_price": 0.7247,
+      "entry_time": "2026-04-30T15:11:50.509594+00:00",
+      "sl": 0.747907,
+      "tp": 0.655079,
+      "trailing_active": false,
+      "trailing_sl": null,
+      "last_price": 0.7293,
+      "qty_open": 646.352724,
+      "initial_r": 0.023207,
+      "be_armed": false,
+      "stage2_done": false
+    },
+    "APE_USDT": {
+      "symbol": "APE_USDT",
+      "side": "long",
+      "qty": 2681.992337,
+      "entry_price": 0.1548,
+      "entry_time": "2026-04-30T16:05:15.315378+00:00",
+      "sl": 0.149207,
+      "tp": 0.171579,
+      "trailing_active": false,
+      "trailing_sl": null,
+      "last_price": 0.1584,
+      "qty_open": 2681.992337,
+      "initial_r": 0.005593,
+      "be_armed": false,
+      "stage2_done": false
+    },
+    "BIO_USDT": {
+      "symbol": "BIO_USDT",
+      "side": "long",
+      "qty": 6102.877071,
+      "entry_price": 0.0412,
+      "entry_time": "2026-04-30T17:04:39.536618+00:00",
+      "sl": 0.038742,
+      "tp": 0.048574,
+      "trailing_active": false,
+      "trailing_sl": null,
+      "last_price": 0.0428,
+      "qty_open": 6102.877071,
+      "initial_r": 0.002458,
+      "be_armed": false,
+      "stage2_done": false
+    }
+  },
+  "cooldown_until": {},
+  "symbol_block_until": {},
+  "symbol_loss_streak": {},
+  "trades": [
+    {
+      "time": "2026-04-30T18:09:17.769165+00:00",
+      "type": "close",
+      "symbol": "RIVER_USDT",
+      "side": "long",
+      "qty": 0,
+      "entry": 0,
+      "exit": 0,
+      "pnl": -15.0,
+      "reason": "sl"
+    },
+    {
+      "time": "2026-04-30T17:04:39.536618+00:00",
+      "type": "open",
+      "symbol": "BIO_USDT",
+      "side": "long",
+      "qty": 6102.877071,
+      "entry": 0.0412,
+      "sl": 0.038742,
+      "tp": 0.048574,
+      "reason": "EMA>200, ADX strong, ATR ok, breakout upper BB, pullback to SMA20"
+    },
+    {
+      "time": "2026-04-30T17:04:15.485694+00:00",
+      "type": "open",
+      "symbol": "RIVER_USDT",
+      "side": "long",
+      "qty": 0,
+      "entry": 0,
+      "sl": 0,
+      "tp": 0,
+      "reason": "EMA>200, ADX strong, ATR ok, breakout upper BB, pullback to SMA20"
+    },
+    {
+      "time": "2026-04-30T16:05:15.315378+00:00",
+      "type": "open",
+      "symbol": "APE_USDT",
+      "side": "long",
+      "qty": 2681.992337,
+      "entry": 0.1548,
+      "sl": 0.149207,
+      "tp": 0.171579,
+      "reason": "EMA>200, ADX strong, ATR ok, breakout upper BB, pullback to SMA20"
+    },
+    {
+      "time": "2026-04-30T15:11:50.509615+00:00",
+      "type": "open",
+      "symbol": "RAVE_USDT",
+      "side": "short",
+      "qty": 646.352724,
+      "entry": 0.7247,
+      "sl": 0.747907,
+      "tp": 0.655079,
+      "reason": "EMA<200, ADX strong, ATR ok, breakout lower BB, pullback to SMA20"
+    }
+  ],
+  "market_regime": "weak",
+  "regime_entry_risk": 0.015,
+  "regime_breadth": 1,
+  "regime_universe": 120,
+  "updated_at": "2026-04-30T20:49:37.622009+00:00"
+}

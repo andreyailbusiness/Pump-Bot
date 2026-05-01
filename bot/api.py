@@ -4,7 +4,7 @@ import os
 from dataclasses import asdict
 from typing import Any, Callable
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -89,18 +89,78 @@ def create_app(
         return state_store.to_dict(st)
 
     @app.post("/api/state/import")
-    def api_state_import(payload: dict[str, Any] = Body(...)) -> Any:
+    def api_state_import(
+        payload: dict[str, Any] = Body(...),
+        merge: bool = Query(False, description="Merge into current state instead of replacing."),
+        apply_equity: bool = Query(
+            False,
+            description="When merge=true, also set equity/start_equity from payload (default: keep current).",
+        ),
+    ) -> Any:
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="Payload must be a JSON object")
 
         try:
-            st = state_store.from_dict(payload)
+            if not merge:
+                st = state_store.from_dict(payload)
+            else:
+                cur = get_state()
+                base = state_store.to_dict(cur)
+                pos_in = payload.get("positions") or {}
+                if not isinstance(pos_in, dict):
+                    raise HTTPException(status_code=400, detail="positions must be an object")
+                merged_pos = dict(base.get("positions") or {})
+                for sym, row in pos_in.items():
+                    if not isinstance(row, dict):
+                        continue
+                    merged_pos[sym] = row
+                base["positions"] = merged_pos
+
+                trades_in = payload.get("trades") or []
+                if not isinstance(trades_in, list):
+                    raise HTTPException(status_code=400, detail="trades must be a list")
+                seen = {(str(t.get("time")), str(t.get("type")), str(t.get("symbol"))) for t in base.get("trades") or []}
+                for t in trades_in:
+                    if not isinstance(t, dict):
+                        continue
+                    key = (str(t.get("time")), str(t.get("type")), str(t.get("symbol")))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    base.setdefault("trades", []).append(t)
+
+                if apply_equity:
+                    if "equity" in payload:
+                        base["equity"] = float(payload["equity"])
+                    if "start_equity" in payload:
+                        base["start_equity"] = float(payload["start_equity"])
+
+                for k in ("cooldown_until", "symbol_block_until", "symbol_loss_streak"):
+                    if k in payload and isinstance(payload[k], dict):
+                        merged = dict(base.get(k) or {})
+                        merged.update(payload[k])
+                        base[k] = merged
+
+                for k in ("market_regime", "regime_entry_risk", "regime_breadth", "regime_universe", "updated_at"):
+                    if k in payload and payload[k] is not None:
+                        if k == "regime_entry_risk":
+                            base[k] = float(payload[k])
+                        elif k in ("regime_breadth", "regime_universe"):
+                            base[k] = int(payload[k])
+                        elif k == "updated_at":
+                            base[k] = str(payload[k])
+                        else:
+                            base[k] = str(payload[k])
+
+                st = state_store.from_dict(base)
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid state payload: {exc}") from exc
 
         set_state(st)
         state_store.save(st)
-        return {"ok": True, "positions": len(st.positions), "trades": len(st.trades)}
+        return {"ok": True, "merged": bool(merge), "positions": len(st.positions), "trades": len(st.trades)}
 
     return app
 
