@@ -11,7 +11,7 @@ import uvicorn
 from .api import create_app
 from .config import Settings, get_settings
 from .remote_state import choose_newer_state, pull_state_from_github, push_state_to_github
-from .runner import bot_loop, build_runtime, sync_live_positions
+from .runner import apply_live_equity_from_wallet, bot_loop, build_runtime, sync_live_positions
 from .state import BotState, StateStore
 
 
@@ -159,6 +159,10 @@ def main() -> None:
                 )
             except Exception as exc:
                 print(f"[mexc] startup position sync failed: {exc}", flush=True)
+
+        if settings.trading_mode == "live" and rt.live_exec is not None:
+            await asyncio.to_thread(apply_live_equity_from_wallet, rt)
+            state_store.save(rt.state)
 
         # Fresh deploy / missing state file leaves updated_at at 1970; persist once for UI clarity.
         if str(getattr(rt.state, "updated_at", "")).startswith("1970"):

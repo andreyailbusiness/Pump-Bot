@@ -92,6 +92,23 @@ def _live_mode_active(rt: BotRuntime) -> bool:
     return bool(rt.settings.trading_mode == "live" and rt.settings.live_enabled and rt.live_exec is not None)
 
 
+def apply_live_equity_from_wallet(rt: BotRuntime) -> None:
+    """Keep BotState.equity aligned with USDT-M wallet so live position sizing matches real margin."""
+    if rt.settings.trading_mode != "live" or rt.live_exec is None:
+        return
+    try:
+        w = rt.live_exec.fetch_futures_wallet_usdt()
+        total = float(w.get("total") or 0.0)
+        if total <= 0:
+            return
+        # Template defaults from paper (1000/1000): reset drawdown baseline once to real wallet.
+        if abs(rt.state.start_equity - 1000.0) < 0.02 and abs(rt.state.equity - 1000.0) < 0.02:
+            rt.state.start_equity = total
+        rt.state.equity = total
+    except Exception:
+        pass
+
+
 def _mexc_exchange_position_sync_enabled(rt: BotRuntime) -> bool:
     """Use MEXC open positions as source of truth (requires live mode + API keys + ccxt client)."""
     if rt.live_exec is None or rt.settings.trading_mode != "live":
@@ -550,6 +567,7 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
     while True:
         try:
             await sync_live_positions(rt)
+            await asyncio.to_thread(apply_live_equity_from_wallet, rt)
             if getattr(rt.state, "bot_paused", False):
                 rt.save()
                 await asyncio.sleep(poll_every.total_seconds())

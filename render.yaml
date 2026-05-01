@@ -10,12 +10,11 @@ services:
     # GITHUB_STATE_TOKEN in the dashboard (so GitHub state sync actually runs) or upgrade to a
     # paid instance and attach a persistent disk at mountPath /var/data (same as STATE_PATH).
     envVars:
-      # live + MEXC keys: open positions are loaded from the exchange each loop (and on startup).
-      # LIVE_ENABLED=false: no new bot entries (only manage/sync real positions). Set true for live orders.
+      # Real futures orders on MEXC (requires API keys in dashboard). Caps: LIVE_MAX_* env vars.
       - key: TRADING_MODE
         value: live
       - key: LIVE_ENABLED
-        value: "false"
+        value: "true"
       - key: MEXC_EXCHANGE_POSITION_SYNC
         value: "true"
       - key: QUOTE_ASSET
