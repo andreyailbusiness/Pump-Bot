@@ -478,19 +478,19 @@ def build_runtime(settings: Settings) -> BotRuntime:
     state = state_store.load()
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
     live_exec: LiveExecution | None = None
-    if settings.trading_mode == "live" and settings.mexc_api_key and settings.mexc_api_secret:
+    # ccxt client for wallet / positions whenever futures keys exist (works in paper too for dashboard).
+    # Live orders and exchange position sync remain gated by trading_mode / LIVE_ENABLED elsewhere.
+    if settings.market_type == "futures" and settings.mexc_api_key and settings.mexc_api_secret:
         try:
             live_exec = LiveExecution(
                 api_key=str(settings.mexc_api_key),
                 api_secret=str(settings.mexc_api_secret),
             )
+            print("[mexc] ccxt initialized (wallet API; live trading only if TRADING_MODE=live)", flush=True)
         except Exception as exc:
-            print(f"[mexc] ccxt init failed (live orders + position sync disabled): {exc}", flush=True)
-    elif settings.trading_mode == "live":
-        print(
-            "[mexc] TRADING_MODE=live but MEXC_API_KEY/MEXC_API_SECRET missing; live orders and exchange sync disabled.",
-            flush=True,
-        )
+            print(f"[mexc] ccxt init failed: {exc}", flush=True)
+    elif settings.market_type == "futures":
+        print("[mexc] MARKET_TYPE=futures but MEXC_API_KEY/MEXC_API_SECRET missing.", flush=True)
 
     risk = RiskParams(risk_percent=settings.risk_percent, leverage=settings.leverage)
     order_manager = OrderManager(

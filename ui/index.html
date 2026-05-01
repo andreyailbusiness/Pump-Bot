@@ -410,6 +410,9 @@
         add(`Режим: <strong>${dash.trading_mode || "—"}</strong>`);
         add(`Live-ордера: <strong>${dash.live_enabled ? "вкл" : "выкл"}</strong>`);
         add(`MEXC API: <strong>${dash.mexc_connected ? "есть" : "нет ключей"}</strong>`);
+        if (dash.mexc_positions_sync !== undefined) {
+          add(`Позиции с биржи: <strong>${dash.mexc_positions_sync ? "да (live)" : "нет (нужен TRADING_MODE=live)"}</strong>`);
+        }
         add(`Бот: <strong>${paused ? "пауза" : "работает"}</strong>`);
       }
 

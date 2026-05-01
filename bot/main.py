@@ -104,6 +104,7 @@ def main() -> None:
             "trading_mode": settings.trading_mode,
             "live_enabled": settings.live_enabled,
             "mexc_connected": rt.live_exec is not None,
+            "mexc_positions_sync": settings.trading_mode == "live" and settings.mexc_exchange_position_sync,
         }
 
     app = create_app(
