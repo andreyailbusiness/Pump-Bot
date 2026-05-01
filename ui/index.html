@@ -282,11 +282,39 @@
       .sim-banner .mono {
         font-size: 0.82rem;
       }
+      .trade-status-bar {
+        margin-bottom: 18px;
+        padding: 16px 20px;
+        border-radius: 14px;
+        font-size: 1rem;
+        line-height: 1.5;
+        font-weight: 600;
+      }
+      .trade-status-bar.ok {
+        border: 1px solid rgba(52, 211, 153, 0.45);
+        background: rgba(52, 211, 153, 0.11);
+        color: #6ee7b7;
+      }
+      .trade-status-bar.pause {
+        border: 1px solid rgba(251, 191, 36, 0.5);
+        background: rgba(251, 191, 36, 0.09);
+        color: var(--warn);
+      }
+      .trade-status-bar.off {
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(148, 163, 184, 0.08);
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .trade-status-bar strong {
+        font-weight: 700;
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div id="simBanner" class="sim-banner"></div>
+      <div id="tradeStatusBar" class="trade-status-bar off" style="display: none"></div>
       <header class="hero">
         <div class="brand">
           <h1>Instarding Bot</h1>
@@ -432,14 +460,39 @@
         }
         add(`Бот: <strong>${paused ? "пауза" : "работает"}</strong>`);
 
-        const ban = el("simBanner");
+        const ts = el("tradeStatusBar");
         const tm = (dash.trading_mode || "").toLowerCase();
+        const liveOn = dash.live_enabled === true;
+        ts.style.display = "block";
         if (tm === "paper") {
+          ts.className = "trade-status-bar off";
+          ts.textContent =
+            "Статус: симуляция (paper) — бот не шлёт реальные ордера на биржу.";
+        } else if (tm === "live" && !liveOn) {
+          ts.className = "trade-status-bar off";
+          ts.textContent =
+            "Статус: TRADING_MODE=live, но LIVE_ENABLED выключен — ордера на MEXC бот не отправляет (только синк/кошелёк при настройках).";
+        } else if (tm === "live" && liveOn && paused) {
+          ts.className = "trade-status-bar pause";
+          ts.innerHTML =
+            "Статус: <strong>ПАУЗА</strong> — автоматические входы и управление позициями выключены. Ручные сделки на бирже при необходимости подтягиваются в таблицу после синхронизации.";
+        } else if (tm === "live" && liveOn && !paused) {
+          ts.className = "trade-status-bar ok";
+          ts.innerHTML =
+            "Статус: <strong>АВТОТОРГОВЛЯ ВКЛ</strong> — при сигнале стратегии бот может выставить ордер на MEXC (в лимитах LIVE_MAX_*).";
+        } else {
+          ts.className = "trade-status-bar off";
+          ts.textContent = "Статус: проверьте TRADING_MODE и LIVE_ENABLED в Render.";
+        }
+
+        const ban = el("simBanner");
+        const tmPaper = (dash.trading_mode || "").toLowerCase();
+        if (tmPaper === "paper") {
           ban.style.display = "block";
           ban.innerHTML =
             "<strong>Сейчас симуляция (paper).</strong> Чтобы торговать на MEXC: открой Render → <span class=\"mono\">Environment</span>, выставь " +
             "<span class=\"mono\">TRADING_MODE=live</span> и <span class=\"mono\">LIVE_ENABLED=true</span>. Если там уже есть <span class=\"mono\">TRADING_MODE=paper</span> — удали или измени, сохрани и сделай redeploy.";
-        } else if (tm === "live" && dash.live_enabled === false) {
+        } else if (tmPaper === "live" && dash.live_enabled === false) {
           ban.style.display = "block";
           ban.innerHTML =
             "<strong>Live-ордера выключены.</strong> В Render добавь или измени <span class=\"mono\">LIVE_ENABLED=true</span>, сохрани и перезапусти сервис.";
