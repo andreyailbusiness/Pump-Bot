@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 from datetime import datetime
 from typing import Any
@@ -38,6 +39,8 @@ def pull_state_from_github(settings: Settings) -> dict[str, Any] | None:
         return None
     if not settings.github_state_repo or not settings.github_state_file_path:
         return None
+    if not settings.github_state_token:
+        return None
 
     resp = requests.get(
         _contents_url(settings),
@@ -61,6 +64,8 @@ def push_state_to_github(settings: Settings, state_payload: dict[str, Any]) -> N
     if not settings.github_state_sync_enabled:
         return
     if not settings.github_state_repo or not settings.github_state_file_path:
+        return
+    if not settings.github_state_token:
         return
 
     timeout = max(5, int(settings.github_state_timeout_sec))
@@ -101,6 +106,39 @@ def _is_default_empty_local(payload: dict[str, Any]) -> bool:
     return abs(eq - se) < 1e-9
 
 
+def _trade_key(t: Any) -> tuple[str, str, str]:
+    if not isinstance(t, dict):
+        return ("", "", "")
+    return (str(t.get("time")), str(t.get("type")), str(t.get("symbol")))
+
+
+def _union_supplement(newer: dict[str, Any], older: dict[str, Any]) -> dict[str, Any]:
+    """
+    Prefer fields from ``newer`` (by updated_at); add open positions and trades from ``older``
+    that are missing. Avoids losing symbols when GitHub has a newer timestamp but an incomplete
+    snapshot (e.g. failed push after merge import, then deploy).
+    """
+    out = copy.deepcopy(newer)
+    np = dict(out.get("positions") or {})
+    op = older.get("positions") or {}
+    for sym, row in op.items():
+        if sym not in np and isinstance(row, dict):
+            np[sym] = copy.deepcopy(row)
+    out["positions"] = np
+
+    trades_out = list(out.get("trades") or [])
+    seen = {_trade_key(t) for t in trades_out}
+    for t in older.get("trades") or []:
+        if not isinstance(t, dict):
+            continue
+        k = _trade_key(t)
+        if k not in seen:
+            seen.add(k)
+            trades_out.append(copy.deepcopy(t))
+    out["trades"] = trades_out
+    return out
+
+
 def choose_newer_state(local_payload: dict[str, Any], remote_payload: dict[str, Any] | None) -> dict[str, Any]:
     if not remote_payload:
         return local_payload
@@ -110,9 +148,11 @@ def choose_newer_state(local_payload: dict[str, Any], remote_payload: dict[str, 
     local_dt = _parse_iso(str(local_payload.get("updated_at") or ""))
     remote_dt = _parse_iso(str(remote_payload.get("updated_at") or ""))
     if local_dt is None and remote_dt is None:
-        return local_payload
+        return _union_supplement(local_payload, remote_payload)
     if local_dt is None:
-        return remote_payload
+        return _union_supplement(remote_payload, local_payload)
     if remote_dt is None:
-        return local_payload
-    return remote_payload if remote_dt > local_dt else local_payload
+        return _union_supplement(local_payload, remote_payload)
+    if remote_dt > local_dt:
+        return _union_supplement(remote_payload, local_payload)
+    return _union_supplement(local_payload, remote_payload)

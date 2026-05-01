@@ -95,6 +95,12 @@ def main() -> None:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if settings.github_state_sync_enabled and not settings.github_state_token:
+            print(
+                "[state] GITHUB_STATE_SYNC_ENABLED but GITHUB_STATE_TOKEN is unset; "
+                "GitHub pull/push are skipped — add the token in Render env to survive deploys.",
+                flush=True,
+            )
         if settings.github_state_sync_enabled:
             try:
                 local_payload = state_store.to_dict(rt.state)
