@@ -160,6 +160,10 @@ def main() -> None:
             except Exception as exc:
                 print(f"[mexc] startup position sync failed: {exc}", flush=True)
 
+        # Fresh deploy / missing state file leaves updated_at at 1970; persist once for UI clarity.
+        if str(getattr(rt.state, "updated_at", "")).startswith("1970"):
+            state_store.save(rt.state)
+
         asyncio.create_task(bot_loop(rt))
         if settings.state_backup_enabled:
             asyncio.create_task(periodic_state_backup(state_store, get_state, settings))
