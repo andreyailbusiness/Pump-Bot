@@ -120,6 +120,19 @@ def main() -> None:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        if settings.trading_mode != "live":
+            print(
+                f"[mode] TRADING_MODE={settings.trading_mode!r} — реальные сделки MEXC выключены. "
+                "В Render → Environment задайте TRADING_MODE=live и LIVE_ENABLED=true "
+                "(ручные переменные перекрывают render.yaml).",
+                flush=True,
+            )
+        elif not settings.live_enabled:
+            print(
+                "[mode] LIVE_ENABLED=false — ордера на биржу не отправляются. "
+                "Поставьте LIVE_ENABLED=true в Render.",
+                flush=True,
+            )
         if settings.github_state_sync_enabled and not settings.github_state_token:
             print(
                 "[state] GITHUB_STATE_SYNC_ENABLED but GITHUB_STATE_TOKEN is unset; "

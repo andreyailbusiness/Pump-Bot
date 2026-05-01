@@ -266,10 +266,27 @@
         color: var(--text);
         font-weight: 600;
       }
+      .sim-banner {
+        display: none;
+        margin-bottom: 18px;
+        padding: 14px 18px;
+        border-radius: 14px;
+        border: 1px solid rgba(251, 191, 36, 0.45);
+        background: rgba(251, 191, 36, 0.09);
+        font-size: 0.9rem;
+        line-height: 1.55;
+      }
+      .sim-banner strong {
+        color: var(--warn);
+      }
+      .sim-banner .mono {
+        font-size: 0.82rem;
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
+      <div id="simBanner" class="sim-banner"></div>
       <header class="hero">
         <div class="brand">
           <h1>Instarding Bot</h1>
@@ -414,6 +431,22 @@
           add(`Позиции с биржи: <strong>${dash.mexc_positions_sync ? "да (live)" : "нет (нужен TRADING_MODE=live)"}</strong>`);
         }
         add(`Бот: <strong>${paused ? "пауза" : "работает"}</strong>`);
+
+        const ban = el("simBanner");
+        const tm = (dash.trading_mode || "").toLowerCase();
+        if (tm === "paper") {
+          ban.style.display = "block";
+          ban.innerHTML =
+            "<strong>Сейчас симуляция (paper).</strong> Чтобы торговать на MEXC: открой Render → <span class=\"mono\">Environment</span>, выставь " +
+            "<span class=\"mono\">TRADING_MODE=live</span> и <span class=\"mono\">LIVE_ENABLED=true</span>. Если там уже есть <span class=\"mono\">TRADING_MODE=paper</span> — удали или измени, сохрани и сделай redeploy.";
+        } else if (tm === "live" && dash.live_enabled === false) {
+          ban.style.display = "block";
+          ban.innerHTML =
+            "<strong>Live-ордера выключены.</strong> В Render добавь или измени <span class=\"mono\">LIVE_ENABLED=true</span>, сохрани и перезапусти сервис.";
+        } else {
+          ban.style.display = "none";
+          ban.innerHTML = "";
+        }
       }
 
       function renderWallet(w) {
