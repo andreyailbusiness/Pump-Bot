@@ -85,12 +85,36 @@ def main() -> None:
         except Exception as exc:
             print(f"[state] GitHub push after API save failed: {exc}", flush=True)
 
+    def fetch_mexc_wallet() -> dict:
+        if rt.live_exec is None:
+            return {"ok": False, "detail": "no_mexc_client"}
+        try:
+            w = rt.live_exec.fetch_futures_wallet_usdt()
+            return {"ok": True, **w}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)}
+
+    def set_bot_paused(val: bool) -> None:
+        rt.state.bot_paused = bool(val)
+        state_store.save(rt.state)
+        push_github_state_now()
+
+    def dashboard_meta() -> dict:
+        return {
+            "trading_mode": settings.trading_mode,
+            "live_enabled": settings.live_enabled,
+            "mexc_connected": rt.live_exec is not None,
+        }
+
     app = create_app(
         state_store=state_store,
         get_state=get_state,
         set_state=set_state,
         max_drawdown_limit=float(settings.max_drawdown),
         on_state_persisted=push_github_state_now,
+        fetch_mexc_wallet=fetch_mexc_wallet,
+        set_bot_paused=set_bot_paused,
+        get_dashboard_meta=dashboard_meta,
     )
 
     @app.on_event("startup")

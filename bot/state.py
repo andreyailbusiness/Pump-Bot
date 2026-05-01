@@ -52,6 +52,8 @@ class BotState:
     regime_breadth: int = 0
     regime_universe: int = 0
     updated_at: str = field(default_factory=_utcnow_iso)
+    # When True, bot_loop skips scanning and position management (exchange sync still runs in live).
+    bot_paused: bool = False
 
     def max_drawdown_reached(self, max_dd: float) -> bool:
         if self.start_equity <= 0:
@@ -100,6 +102,7 @@ class StateStore:
         st = BotState(
             equity=float(raw.get("equity", 1000.0)),
             start_equity=float(raw.get("start_equity", raw.get("equity", 1000.0))),
+            bot_paused=bool(raw.get("bot_paused", False)),
             cooldown_until=dict(raw.get("cooldown_until", {}) or {}),
             symbol_block_until=dict(raw.get("symbol_block_until", {}) or {}),
             symbol_loss_streak={k: int(v) for k, v in dict(raw.get("symbol_loss_streak", {}) or {}).items()},

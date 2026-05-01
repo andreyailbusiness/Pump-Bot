@@ -25,6 +25,9 @@ def create_app(
     set_state: Callable[[BotState], None],
     max_drawdown_limit: float = 0.08,
     on_state_persisted: Callable[[], None] | None = None,
+    fetch_mexc_wallet: Callable[[], dict[str, Any]] | None = None,
+    set_bot_paused: Callable[[bool], None] | None = None,
+    get_dashboard_meta: Callable[[], dict[str, Any]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Instarding Bot", version="0.1.0")
 
@@ -55,6 +58,8 @@ def create_app(
             out_positions[k] = p
         d["positions"] = out_positions
         d["max_drawdown_limit"] = float(max_drawdown_limit)
+        if get_dashboard_meta is not None:
+            d["dashboard"] = get_dashboard_meta()
         return d
 
     @app.get("/api/positions")
@@ -76,6 +81,26 @@ def create_app(
     def api_trades(limit: int = 200) -> Any:
         st = get_state()
         return list(reversed(st.trades[-limit:]))
+
+    @app.get("/api/mexc/wallet")
+    def api_mexc_wallet() -> Any:
+        if fetch_mexc_wallet is None:
+            return {"ok": False, "detail": "not_configured"}
+        return fetch_mexc_wallet()
+
+    @app.post("/api/bot/pause")
+    def api_bot_pause() -> Any:
+        if set_bot_paused is None:
+            raise HTTPException(status_code=501, detail="Pause not available")
+        set_bot_paused(True)
+        return {"ok": True, "bot_paused": True}
+
+    @app.post("/api/bot/resume")
+    def api_bot_resume() -> Any:
+        if set_bot_paused is None:
+            raise HTTPException(status_code=501, detail="Resume not available")
+        set_bot_paused(False)
+        return {"ok": True, "bot_paused": False}
 
     def _after_save() -> None:
         if on_state_persisted is not None:

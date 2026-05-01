@@ -266,6 +266,8 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
     Open new positions with a regime-dependent risk percent.
     Existing positions are managed separately and are intentionally untouched.
     """
+    if getattr(rt.state, "bot_paused", False):
+        return
     if rt.settings.trading_mode == "live" and not rt.settings.live_enabled:
         # Live account + sync-only: manage exchange positions only, no paper fills.
         return
@@ -548,6 +550,10 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
     while True:
         try:
             await sync_live_positions(rt)
+            if getattr(rt.state, "bot_paused", False):
+                rt.save()
+                await asyncio.sleep(poll_every.total_seconds())
+                continue
             if rt.settings.trading_mode == "live" and not rt.settings.live_enabled:
                 # Sync-only mode: keep state aligned with exchange, but do not open/close anything.
                 rt.save()

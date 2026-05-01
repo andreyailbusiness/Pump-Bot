@@ -79,3 +79,21 @@ class LiveExecution:
                 continue
             out.append(p)
         return out
+
+    def fetch_futures_wallet_usdt(self) -> dict[str, Any]:
+        """USDT balance on swap (USDT-M futures wallet)."""
+        try:
+            bal = self.exchange.fetch_balance({"type": "swap"})
+        except Exception:
+            bal = self.exchange.fetch_balance()
+        usdt = None
+        if isinstance(bal, dict):
+            usdt = bal.get("USDT") or bal.get("usdt")
+        out: dict[str, Any] = {"currency": "USDT"}
+        if isinstance(usdt, dict):
+            out["free"] = float(usdt.get("free") or 0.0)
+            out["used"] = float(usdt.get("used") or 0.0)
+            out["total"] = float(usdt.get("total") or 0.0)
+        else:
+            out["free"] = out["used"] = out["total"] = 0.0
+        return out
