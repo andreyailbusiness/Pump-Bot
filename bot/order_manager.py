@@ -16,6 +16,15 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
 
+def _position_base_qty(pos: Position, qty: float | None = None) -> float:
+    """Contracts × contract_size when set; else qty is base size (paper)."""
+    q = float(pos.qty if qty is None else qty)
+    cs = pos.contract_size
+    if cs is not None and cs > 0:
+        return q * float(cs)
+    return q
+
+
 def _parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
@@ -42,7 +51,14 @@ class OrderManager:
     def set_cooldown(self, state: BotState, symbol: str) -> None:
         state.cooldown_until[symbol] = _iso(_utcnow() + timedelta(hours=self.cooldown_hours))
 
-    def open_position_paper(self, state: BotState, signal: Signal, plan: OrderPlan) -> None:
+    def open_position_paper(
+        self,
+        state: BotState,
+        signal: Signal,
+        plan: OrderPlan,
+        *,
+        contract_size: float | None = None,
+    ) -> None:
         if signal.symbol in state.positions:
             return
         pos = Position(
@@ -60,6 +76,8 @@ class OrderManager:
             initial_r=abs(plan.entry - plan.sl),
             be_armed=False,
             stage2_done=False,
+            contract_size=contract_size,
+            unrealized_pnl_exchange=None,
         )
         state.positions[signal.symbol] = pos
         state.trades.append(
@@ -235,8 +253,7 @@ class OrderManager:
         self.set_cooldown(state, symbol)
 
     def _pnl_quote(self, pos: Position, exit_price: float, qty: float | None = None) -> float:
-        # Spot-like PnL in quote currency.
-        q = float(pos.qty if qty is None else qty)
+        q = _position_base_qty(pos, qty)
         if pos.side == "long":
             return (exit_price - pos.entry_price) * q
         return (pos.entry_price - exit_price) * q

@@ -107,6 +107,11 @@ def main() -> None:
             "mexc_positions_sync": settings.trading_mode == "live" and settings.mexc_exchange_position_sync,
         }
 
+    def live_unrealized_usdt_map() -> dict[str, float]:
+        if rt.live_exec is None:
+            return {}
+        return rt.live_exec.unrealized_pnl_usdt_by_internal_symbol()
+
     app = create_app(
         state_store=state_store,
         get_state=get_state,
@@ -116,6 +121,7 @@ def main() -> None:
         fetch_mexc_wallet=fetch_mexc_wallet,
         set_bot_paused=set_bot_paused,
         get_dashboard_meta=dashboard_meta,
+        get_live_unrealized_usdt=live_unrealized_usdt_map,
     )
 
     @app.on_event("startup")

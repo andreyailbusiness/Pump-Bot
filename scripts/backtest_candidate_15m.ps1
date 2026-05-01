@@ -1,8 +1,8 @@
-$ErrorActionPreference = "Stop"
-
 param(
-  [int]$Days = 30
+  [int]$Days = 365
 )
+
+$ErrorActionPreference = "Stop"
 
 # Candidate profile: 15m + stricter filters + staged exits (half at 3R, remainder trailing; no 1R partial, no hard 5R).
 python -m bot.backtester `

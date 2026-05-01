@@ -36,6 +36,17 @@ class Position:
     initial_r: float = 0.0
     be_armed: bool = False
     stage2_done: bool = False
+    # Futures (ccxt): base currency amount per 1 contract; None = qty is already base size (paper).
+    contract_size: float | None = None
+    # Last uPnL in USDT from exchange position row (preferred for dashboard when set).
+    unrealized_pnl_exchange: float | None = None
+    # Exchange trigger-order ids managed by bot (reduce-only protection).
+    sl_order_id: str | None = None
+    tp_order_id: str | None = None
+    # Last protection payload sent to exchange (to avoid noisy re-place loops).
+    live_protect_qty: float | None = None
+    live_protect_sl: float | None = None
+    live_protect_tp: float | None = None
 
 
 @dataclass

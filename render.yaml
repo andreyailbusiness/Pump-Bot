@@ -53,6 +53,8 @@ services:
         value: 15m
       - key: CANDLES_LIMIT
         value: "300"
+      - key: BOT_POLL_INTERVAL_SEC
+        value: "15"
       - key: RISK_PERCENT
         value: "0.01"
       - key: RISK_PERCENT_STRONG
@@ -65,6 +67,14 @@ services:
         value: "1"
       - key: LEVERAGE
         value: "10"
+      - key: RR
+        value: "3.0"
+      - key: SL_ATR_MULT
+        value: "1.0"
+      - key: TRAIL_ACTIVATE_ATR_MULT
+        value: "1.5"
+      - key: TRAIL_DIST_ATR_MULT
+        value: "0.5"
       - key: ADX_THRESHOLD
         value: "25"
       - key: STRATEGY_ENTRY_MODE
@@ -76,6 +86,8 @@ services:
       - key: STRATEGY_ENTRY_MODE_WEAK
         value: hybrid
       - key: WEAK_DISABLE_IMPULSE_ENTRIES
+        value: "true"
+      - key: STRICT_FILTERS_LIVE
         value: "true"
       - key: PUMP_LOOKBACK
         value: "6"
@@ -127,6 +139,8 @@ services:
         value: "1"
       - key: LIVE_DAILY_LOSS_LIMIT_USDT
         value: "2.0"
+      - key: LIVE_ENTRY_MAX_DEVIATION_ATR
+        value: "0.5"
       - key: PAPER_STAGED_EXITS
         value: "true"
       - key: PAPER_STAGE2_R

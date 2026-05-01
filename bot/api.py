@@ -8,15 +8,35 @@ from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .state import BotState, StateStore
+from .state import BotState, Position, StateStore
 
 
-def _position_upnl(side: str, qty: float, entry_price: float, last_price: float | None) -> float | None:
+def _position_upnl(
+    side: str,
+    qty: float,
+    entry_price: float,
+    last_price: float | None,
+    contract_size: float | None = None,
+) -> float | None:
+    """USDT PnL; qty is contracts when contract_size is set (base per contract), else qty is base units (paper)."""
     if last_price is None:
         return None
+    base_qty = qty * float(contract_size) if contract_size and contract_size > 0 else qty
     if side == "long":
-        return (last_price - entry_price) * qty
-    return (entry_price - last_price) * qty
+        return (last_price - entry_price) * base_qty
+    return (entry_price - last_price) * base_qty
+
+
+def _position_upnl_for_api(v: Position) -> float | None:
+    if getattr(v, "unrealized_pnl_exchange", None) is not None:
+        return float(v.unrealized_pnl_exchange)
+    return _position_upnl(
+        side=str(v.side),
+        qty=float(v.qty),
+        entry_price=float(v.entry_price),
+        last_price=(float(v.last_price) if v.last_price is not None else None),
+        contract_size=getattr(v, "contract_size", None),
+    )
 
 
 def create_app(
@@ -28,6 +48,7 @@ def create_app(
     fetch_mexc_wallet: Callable[[], dict[str, Any]] | None = None,
     set_bot_paused: Callable[[bool], None] | None = None,
     get_dashboard_meta: Callable[[], dict[str, Any]] | None = None,
+    get_live_unrealized_usdt: Callable[[], dict[str, float]] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Instarding Bot", version="0.1.0")
 
@@ -46,15 +67,19 @@ def create_app(
     def api_state() -> Any:
         st = get_state()
         d = asdict(st)
+        live_upnl: dict[str, float] = {}
+        if get_live_unrealized_usdt is not None:
+            try:
+                live_upnl = get_live_unrealized_usdt()
+            except Exception:
+                live_upnl = {}
         out_positions: dict[str, Any] = {}
         for k, v in st.positions.items():
             p = asdict(v)
-            p["upnl"] = _position_upnl(
-                side=str(v.side),
-                qty=float(v.qty),
-                entry_price=float(v.entry_price),
-                last_price=(float(v.last_price) if v.last_price is not None else None),
-            )
+            if k in live_upnl:
+                p["upnl"] = live_upnl[k]
+            else:
+                p["upnl"] = _position_upnl_for_api(v)
             out_positions[k] = p
         d["positions"] = out_positions
         d["max_drawdown_limit"] = float(max_drawdown_limit)
@@ -65,15 +90,19 @@ def create_app(
     @app.get("/api/positions")
     def api_positions() -> Any:
         st = get_state()
+        live_upnl: dict[str, float] = {}
+        if get_live_unrealized_usdt is not None:
+            try:
+                live_upnl = get_live_unrealized_usdt()
+            except Exception:
+                live_upnl = {}
         out_positions: dict[str, Any] = {}
         for k, v in st.positions.items():
             p = asdict(v)
-            p["upnl"] = _position_upnl(
-                side=str(v.side),
-                qty=float(v.qty),
-                entry_price=float(v.entry_price),
-                last_price=(float(v.last_price) if v.last_price is not None else None),
-            )
+            if k in live_upnl:
+                p["upnl"] = live_upnl[k]
+            else:
+                p["upnl"] = _position_upnl_for_api(v)
             out_positions[k] = p
         return out_positions
 

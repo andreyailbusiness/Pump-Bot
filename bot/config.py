@@ -34,6 +34,8 @@ class Settings(BaseSettings):
 
     timeframe: str = Field(default="1h", alias="TIMEFRAME")
     candles_limit: int = Field(default=300, alias="CANDLES_LIMIT")
+    # Main loop pause after each full pass (exchange sync, position updates, symbol scan). Lower = fresher state, more API calls.
+    bot_poll_interval_sec: int = Field(default=15, ge=15, le=3600, alias="BOT_POLL_INTERVAL_SEC")
 
     risk_percent: float = Field(default=0.01, alias="RISK_PERCENT")
     risk_percent_strong: float = Field(default=0.015, alias="RISK_PERCENT_STRONG")
@@ -41,6 +43,10 @@ class Settings(BaseSettings):
     risk_percent_weak: float = Field(default=0.005, alias="RISK_PERCENT_WEAK")
     max_drawdown: float = Field(default=0.08, alias="MAX_DRAWDOWN")
     leverage: int = Field(default=1, alias="LEVERAGE")
+    rr: float = Field(default=3.0, alias="RR")
+    sl_atr_mult: float = Field(default=1.0, alias="SL_ATR_MULT")
+    trail_activate_atr_mult: float = Field(default=1.5, alias="TRAIL_ACTIVATE_ATR_MULT")
+    trail_dist_atr_mult: float = Field(default=0.5, alias="TRAIL_DIST_ATR_MULT")
 
     adx_period: int = Field(default=14, alias="ADX_PERIOD")
     adx_threshold: float = Field(default=25.0, alias="ADX_THRESHOLD")
@@ -58,6 +64,8 @@ class Settings(BaseSettings):
     strategy_entry_mode_neutral: str = Field(default="hybrid", alias="STRATEGY_ENTRY_MODE_NEUTRAL")
     strategy_entry_mode_weak: str = Field(default="hybrid", alias="STRATEGY_ENTRY_MODE_WEAK")
     weak_disable_impulse_entries: bool = Field(default=True, alias="WEAK_DISABLE_IMPULSE_ENTRIES")
+    # Mirror backtester --strict-filters behavior in live/runtime entries.
+    strict_filters_live: bool = Field(default=True, alias="STRICT_FILTERS_LIVE")
     pump_lookback: int = Field(default=6, alias="PUMP_LOOKBACK")
     pump_min_ret_1h: float = Field(default=0.02, alias="PUMP_MIN_RET_1H")
     pump_volume_mult: float = Field(default=1.8, alias="PUMP_VOLUME_MULT")
@@ -84,8 +92,15 @@ class Settings(BaseSettings):
     # bot-only symbols). Set false only for debugging. Requires TRADING_MODE=live.
     mexc_exchange_position_sync: bool = Field(default=True, alias="MEXC_EXCHANGE_POSITION_SYNC")
     live_max_notional_usdt: float = Field(default=3.0, alias="LIVE_MAX_NOTIONAL_USDT")
+    # Try to size at least this USDT notional (then cap by LIVE_MAX_NOTIONAL) so MEXC min order is met.
+    live_min_order_notional_usdt: float = Field(default=1.0, alias="LIVE_MIN_ORDER_NOTIONAL_USDT")
     live_max_positions: int = Field(default=1, alias="LIVE_MAX_POSITIONS")
+    # 0 = disable. Realized PnL today (from state trades) below -limit blocks new entries.
     live_daily_loss_limit_usdt: float = Field(default=2.0, alias="LIVE_DAILY_LOSS_LIMIT_USDT")
+    # Skip live entry if current mark deviates from signal entry by more than N ATR (0 = disable).
+    live_entry_max_deviation_atr: float = Field(default=0.5, alias="LIVE_ENTRY_MAX_DEVIATION_ATR")
+    # Log to stdout when a symbol had a signal but open was skipped (live micro-account debugging).
+    entry_block_log: bool = Field(default=True, alias="ENTRY_BLOCK_LOG")
     paper_staged_exits: bool = Field(default=True, alias="PAPER_STAGED_EXITS")
     paper_stage2_r: float = Field(default=3.0, alias="PAPER_STAGE2_R")
     paper_stage2_close_ratio: float = Field(default=0.50, alias="PAPER_STAGE2_CLOSE_RATIO")

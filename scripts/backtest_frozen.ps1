@@ -1,14 +1,18 @@
+param(
+  [int]$Days = 365
+)
+
 $ErrorActionPreference = "Stop"
 
 # Frozen benchmark preset (v2) — «после»: 3-phase regime + kill-switch + weak без impulse.
 # Совпадает с логикой рантайма (STRATEGY_ENTRY_MODE_* , WEAK_DISABLE_IMPULSE_ENTRIES, LOSS_STREAK_*).
 # Сравнивай будущие изменения только этой же командой.
 #
-# Ориентир по отчёту (~90 дн, фев–апр): ROI ~49%, MaxDD ~11%, PF ~2, сделок ~120 (числа могут плавать из‑за данных API).
+# Для полного прогона за последние 12 месяцев используйте Days=365 (по умолчанию).
 
 python -m bot.backtester `
   --timeframe 1h `
-  --days 90 `
+  --days $Days `
   --limit 120 `
   --fee 0.0004 `
   --slip-bps 2 `
