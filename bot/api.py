@@ -24,6 +24,7 @@ def create_app(
     get_state: Callable[[], BotState],
     set_state: Callable[[BotState], None],
     max_drawdown_limit: float = 0.08,
+    on_state_persisted: Callable[[], None] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Instarding Bot", version="0.1.0")
 
@@ -76,11 +77,16 @@ def create_app(
         st = get_state()
         return list(reversed(st.trades[-limit:]))
 
+    def _after_save() -> None:
+        if on_state_persisted is not None:
+            on_state_persisted()
+
     @app.post("/api/state/reset")
     def api_reset() -> Any:
         st = BotState()
         set_state(st)
         state_store.save(st)
+        _after_save()
         return {"ok": True}
 
     @app.get("/api/state/export")
@@ -141,14 +147,13 @@ def create_app(
                         merged.update(payload[k])
                         base[k] = merged
 
-                for k in ("market_regime", "regime_entry_risk", "regime_breadth", "regime_universe", "updated_at"):
+                # Do not apply payload updated_at — keep server time; save() will set fresh updated_at.
+                for k in ("market_regime", "regime_entry_risk", "regime_breadth", "regime_universe"):
                     if k in payload and payload[k] is not None:
                         if k == "regime_entry_risk":
                             base[k] = float(payload[k])
                         elif k in ("regime_breadth", "regime_universe"):
                             base[k] = int(payload[k])
-                        elif k == "updated_at":
-                            base[k] = str(payload[k])
                         else:
                             base[k] = str(payload[k])
 
@@ -160,6 +165,7 @@ def create_app(
 
         set_state(st)
         state_store.save(st)
+        _after_save()
         return {"ok": True, "merged": bool(merge), "positions": len(st.positions), "trades": len(st.trades)}
 
     return app

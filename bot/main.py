@@ -77,11 +77,20 @@ def main() -> None:
         rt.state = st
         rt.state_store = state_store
 
+    def push_github_state_now() -> None:
+        if not settings.github_state_sync_enabled:
+            return
+        try:
+            push_state_to_github(settings, state_store.to_dict(get_state()))
+        except Exception as exc:
+            print(f"[state] GitHub push after API save failed: {exc}", flush=True)
+
     app = create_app(
         state_store=state_store,
         get_state=get_state,
         set_state=set_state,
         max_drawdown_limit=float(settings.max_drawdown),
+        on_state_persisted=push_github_state_now,
     )
 
     @app.on_event("startup")
