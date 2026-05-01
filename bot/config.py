@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     loss_streak_block_threshold: int = Field(default=2, alias="LOSS_STREAK_BLOCK_THRESHOLD")
     loss_streak_block_hours: int = Field(default=72, alias="LOSS_STREAK_BLOCK_HOURS")
     live_enabled: bool = Field(default=False, alias="LIVE_ENABLED")
+    # When live + futures + MEXC keys: pull open swap positions from the exchange (and drop stale
+    # bot-only symbols). Set false only for debugging. Requires TRADING_MODE=live.
+    mexc_exchange_position_sync: bool = Field(default=True, alias="MEXC_EXCHANGE_POSITION_SYNC")
     live_max_notional_usdt: float = Field(default=3.0, alias="LIVE_MAX_NOTIONAL_USDT")
     live_max_positions: int = Field(default=1, alias="LIVE_MAX_POSITIONS")
     live_daily_loss_limit_usdt: float = Field(default=2.0, alias="LIVE_DAILY_LOSS_LIMIT_USDT")

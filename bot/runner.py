@@ -5,7 +5,7 @@ import time
 from dataclasses import replace
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -92,6 +92,13 @@ def _live_mode_active(rt: BotRuntime) -> bool:
     return bool(rt.settings.trading_mode == "live" and rt.settings.live_enabled and rt.live_exec is not None)
 
 
+def _mexc_exchange_position_sync_enabled(rt: BotRuntime) -> bool:
+    """Use MEXC open positions as source of truth (requires live mode + API keys + ccxt client)."""
+    if rt.live_exec is None or rt.settings.trading_mode != "live":
+        return False
+    return bool(rt.settings.mexc_exchange_position_sync)
+
+
 def _daily_realized_pnl(state: BotState) -> float:
     today = datetime.now(timezone.utc).date()
     total = 0.0
@@ -112,8 +119,50 @@ def _ccxt_to_internal_symbol(ccxt_symbol: str) -> str:
     return left.replace("/", "_")
 
 
+def _apply_ccxt_open_position_row(rt: BotRuntime, p: dict[str, Any]) -> str | None:
+    """Upsert one ccxt position row into state; return internal symbol if applied."""
+    sym = _ccxt_to_internal_symbol(str(p.get("symbol", "")))
+    if not sym:
+        return None
+    contracts = float(p.get("contracts") or 0.0)
+    if contracts <= 0:
+        return None
+    side = str(p.get("side", "")).lower()
+    side = "long" if side == "long" else "short"
+    entry = float(p.get("entryPrice") or p.get("entry") or p.get("markPrice") or 0.0)
+    mark = float(p.get("markPrice") or p.get("lastPrice") or entry or 0.0)
+    if entry <= 0:
+        return None
+    pos = rt.state.positions.get(sym)
+    if pos is None:
+        init_r = max(abs(entry) * 0.02, 1e-9)
+        rt.state.positions[sym] = Position(
+            symbol=sym,
+            side=side,  # type: ignore[arg-type]
+            qty=contracts,
+            entry_price=entry,
+            entry_time=datetime.now(timezone.utc).isoformat(),
+            sl=(entry - init_r if side == "long" else entry + init_r),
+            tp=(entry + 3.0 * init_r if side == "long" else entry - 3.0 * init_r),
+            trailing_active=False,
+            trailing_sl=None,
+            last_price=mark,
+            qty_open=contracts,
+            initial_r=init_r,
+            be_armed=False,
+            stage2_done=False,
+        )
+        pos = rt.state.positions[sym]
+    pos.side = side  # type: ignore[assignment]
+    pos.qty = contracts
+    pos.last_price = mark
+    if pos.qty_open is None:
+        pos.qty_open = contracts
+    return sym
+
+
 async def sync_live_positions(rt: BotRuntime) -> None:
-    if not _live_mode_active(rt):
+    if not _mexc_exchange_position_sync_enabled(rt):
         return
     assert rt.live_exec is not None
     try:
@@ -121,44 +170,15 @@ async def sync_live_positions(rt: BotRuntime) -> None:
     except Exception:
         return
 
+    seen: set[str] = set()
     for p in rows:
-        sym = _ccxt_to_internal_symbol(str(p.get("symbol", "")))
-        if not sym:
-            continue
-        contracts = float(p.get("contracts") or 0.0)
-        if contracts <= 0:
-            continue
-        side = str(p.get("side", "")).lower()
-        side = "long" if side == "long" else "short"
-        entry = float(p.get("entryPrice") or p.get("entry") or p.get("markPrice") or 0.0)
-        mark = float(p.get("markPrice") or p.get("lastPrice") or entry or 0.0)
-        if entry <= 0:
-            continue
-        pos = rt.state.positions.get(sym)
-        if pos is None:
-            init_r = max(abs(entry) * 0.02, 1e-9)
-            rt.state.positions[sym] = Position(
-                symbol=sym,
-                side=side,  # type: ignore[arg-type]
-                qty=contracts,
-                entry_price=entry,
-                entry_time=datetime.now(timezone.utc).isoformat(),
-                sl=(entry - init_r if side == "long" else entry + init_r),
-                tp=(entry + 3.0 * init_r if side == "long" else entry - 3.0 * init_r),
-                trailing_active=False,
-                trailing_sl=None,
-                last_price=mark,
-                qty_open=contracts,
-                initial_r=init_r,
-                be_armed=False,
-                stage2_done=False,
-            )
-            pos = rt.state.positions[sym]
-        pos.side = side  # type: ignore[assignment]
-        pos.qty = contracts
-        pos.last_price = mark
-        if pos.qty_open is None:
-            pos.qty_open = contracts
+        sym = _apply_ccxt_open_position_row(rt, p)
+        if sym:
+            seen.add(sym)
+    # Drop symbols that are not open on the exchange (survives deploys via MEXC truth).
+    for sym in list(rt.state.positions.keys()):
+        if sym not in seen:
+            del rt.state.positions[sym]
 
 
 @dataclass
@@ -246,6 +266,9 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
     Open new positions with a regime-dependent risk percent.
     Existing positions are managed separately and are intentionally untouched.
     """
+    if rt.settings.trading_mode == "live" and not rt.settings.live_enabled:
+        # Live account + sync-only: manage exchange positions only, no paper fills.
+        return
     if symbol in rt.state.positions:
         return
     if rt.order_manager.in_cooldown(rt.state, symbol):
@@ -453,17 +476,19 @@ def build_runtime(settings: Settings) -> BotRuntime:
     state = state_store.load()
     notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
     live_exec: LiveExecution | None = None
-    if settings.trading_mode == "live":
-        if settings.live_enabled and settings.mexc_api_key and settings.mexc_api_secret:
-            try:
-                live_exec = LiveExecution(
-                    api_key=str(settings.mexc_api_key),
-                    api_secret=str(settings.mexc_api_secret),
-                )
-            except Exception as exc:
-                print(f"[live] init failed, fallback to paper behavior: {exc}", flush=True)
-        else:
-            print("[live] TRADING_MODE=live but LIVE_ENABLED/api keys are missing. Orders are disabled.", flush=True)
+    if settings.trading_mode == "live" and settings.mexc_api_key and settings.mexc_api_secret:
+        try:
+            live_exec = LiveExecution(
+                api_key=str(settings.mexc_api_key),
+                api_secret=str(settings.mexc_api_secret),
+            )
+        except Exception as exc:
+            print(f"[mexc] ccxt init failed (live orders + position sync disabled): {exc}", flush=True)
+    elif settings.trading_mode == "live":
+        print(
+            "[mexc] TRADING_MODE=live but MEXC_API_KEY/MEXC_API_SECRET missing; live orders and exchange sync disabled.",
+            flush=True,
+        )
 
     risk = RiskParams(risk_percent=settings.risk_percent, leverage=settings.leverage)
     order_manager = OrderManager(
@@ -523,6 +548,11 @@ async def bot_loop(rt: BotRuntime, poll_every: timedelta = timedelta(minutes=5))
     while True:
         try:
             await sync_live_positions(rt)
+            if rt.settings.trading_mode == "live" and not rt.settings.live_enabled:
+                # Sync-only mode: keep state aligned with exchange, but do not open/close anything.
+                rt.save()
+                await asyncio.sleep(poll_every.total_seconds())
+                continue
             # Update existing positions first
             await update_positions(rt, list(rt.state.positions.keys()))
 
