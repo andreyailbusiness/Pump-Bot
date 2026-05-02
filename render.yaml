@@ -134,9 +134,11 @@ services:
       - key: LOSS_STREAK_BLOCK_HOURS
         value: "72"
       - key: LIVE_MAX_NOTIONAL_USDT
-        value: "3.0"
+        value: "0"
+      - key: LIVE_MIN_ORDER_NOTIONAL_USDT
+        value: "0"
       - key: LIVE_MAX_POSITIONS
-        value: "1"
+        value: "0"
       - key: LIVE_DAILY_LOSS_LIMIT_USDT
         value: "2.0"
       - key: LIVE_ENTRY_MAX_DEVIATION_ATR

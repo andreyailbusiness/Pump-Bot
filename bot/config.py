@@ -91,14 +91,18 @@ class Settings(BaseSettings):
     # When live + futures + MEXC keys: pull open swap positions from the exchange (and drop stale
     # bot-only symbols). Set false only for debugging. Requires TRADING_MODE=live.
     mexc_exchange_position_sync: bool = Field(default=True, alias="MEXC_EXCHANGE_POSITION_SYNC")
+    # 0 = no cap (size from RISK_PERCENT only, subject to exchange min lot / normalize).
     live_max_notional_usdt: float = Field(default=3.0, alias="LIVE_MAX_NOTIONAL_USDT")
-    # Try to size at least this USDT notional (then cap by LIVE_MAX_NOTIONAL) so MEXC min order is met.
+    # Try to size at least this USDT notional (then cap by LIVE_MAX_NOTIONAL) so MEXC min order is met. 0 = off.
     live_min_order_notional_usdt: float = Field(default=1.0, alias="LIVE_MIN_ORDER_NOTIONAL_USDT")
-    live_max_positions: int = Field(default=1, alias="LIVE_MAX_POSITIONS")
+    # 0 = unlimited concurrent live positions; else max open positions for new entries.
+    live_max_positions: int = Field(default=1, ge=0, alias="LIVE_MAX_POSITIONS")
     # 0 = disable. Realized PnL today (from state trades) below -limit blocks new entries.
     live_daily_loss_limit_usdt: float = Field(default=2.0, alias="LIVE_DAILY_LOSS_LIMIT_USDT")
     # Skip live entry if current mark deviates from signal entry by more than N ATR (0 = disable).
     live_entry_max_deviation_atr: float = Field(default=0.5, alias="LIVE_ENTRY_MAX_DEVIATION_ATR")
+    # Max relative mismatch between target risk and executable risk after contract rounding.
+    live_risk_mismatch_tolerance: float = Field(default=0.03, ge=0.0, le=1.0, alias="LIVE_RISK_MISMATCH_TOLERANCE")
     # Log to stdout when a symbol had a signal but open was skipped (live micro-account debugging).
     entry_block_log: bool = Field(default=True, alias="ENTRY_BLOCK_LOG")
     paper_staged_exits: bool = Field(default=True, alias="PAPER_STAGED_EXITS")

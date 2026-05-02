@@ -132,7 +132,7 @@ class LiveExecution:
             "openType": 2,  # cross
             "triggerPrice": float(self.exchange.price_to_precision(m["symbol"], float(trigger_price))),
             "triggerType": int(trig_type),
-            "executeCycle": 1,
+            "executeCycle": 2,  # 1=24h, 2=7d
             "trend": 1,
             "orderType": 5,  # trigger executes as market
         }

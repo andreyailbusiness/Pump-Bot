@@ -478,7 +478,8 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
     if rt.state.max_drawdown_reached(rt.settings.max_drawdown):
         return
     if _live_mode_active(rt):
-        if len(rt.state.positions) >= int(rt.settings.live_max_positions):
+        _max_pos = int(rt.settings.live_max_positions)
+        if _max_pos > 0 and len(rt.state.positions) >= _max_pos:
             return
         loss_lim = float(rt.settings.live_daily_loss_limit_usdt)
         if loss_lim > 0 and _daily_realized_pnl(rt.state) <= -loss_lim:
@@ -519,6 +520,13 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
     if _live_mode_active(rt):
         assert rt.live_exec is not None
         entry_px = max(float(plan.entry), 1e-12)
+        contract_size = 1.0
+        try:
+            m0 = rt.live_exec._market(symbol)
+            cs0 = float(m0.get("contractSize") or 1.0)
+            contract_size = cs0 if cs0 > 0 else 1.0
+        except Exception:
+            contract_size = 1.0
         max_dev_atr = max(0.0, float(rt.settings.live_entry_max_deviation_atr))
         if max_dev_atr > 0 and isinstance(rt.client, MexcFuturesClient):
             try:
@@ -549,10 +557,9 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
                 pass
         max_notional = max(0.0, float(rt.settings.live_max_notional_usdt))
         min_notional = max(0.0, float(rt.settings.live_min_order_notional_usdt))
-        if max_notional <= 0:
-            return
         risk_qty = float(plan.qty)
-        max_qty = max_notional / entry_px
+        # 0 = no USDT cap; size from risk math only (still normalized to exchange step).
+        max_qty = float("inf") if max_notional <= 0 else (max_notional / entry_px)
         min_qty_floor = (min_notional / entry_px) if min_notional > 0 else 0.0
         if min_qty_floor > max_qty + 1e-12:
             if rt.settings.entry_block_log:
@@ -562,16 +569,35 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
                     flush=True,
                 )
             return
-        capped_qty = min(max(risk_qty, min_qty_floor), max_qty)
-        qty_live = await asyncio.to_thread(rt.live_exec.normalize_amount, symbol, capped_qty)
+        # plan.qty / max_qty / min_qty_floor are in base units; exchange expects contracts.
+        capped_qty_base = min(max(risk_qty, min_qty_floor), max_qty)
+        contracts_raw = capped_qty_base / max(float(contract_size), 1e-12)
+        qty_live = await asyncio.to_thread(rt.live_exec.normalize_amount, symbol, contracts_raw)
         if qty_live <= 0:
             if rt.settings.entry_block_log:
                 print(
                     f"[entry-block] {symbol} qty_live=0 after normalize "
-                    f"(capped_qty={capped_qty:.8g} entry≈{entry_px:.6g} max_notional={max_notional})",
+                    f"(base_qty={capped_qty_base:.8g} contracts_raw={contracts_raw:.8g} "
+                    f"entry≈{entry_px:.6g} contract_size={contract_size} max_notional={max_notional})",
                     flush=True,
                 )
             return
+        # Hard risk gate: if executable contracts drift too far from target risk, skip the entry.
+        target_risk_usdt = max(0.0, float(rt.state.equity) * float(open_risk.risk_percent))
+        exec_base_qty = float(qty_live) * max(float(contract_size), 1e-12)
+        exec_risk_usdt = abs(float(plan.entry) - float(plan.sl)) * float(exec_base_qty)
+        tol = max(0.0, float(rt.settings.live_risk_mismatch_tolerance))
+        if target_risk_usdt > 0:
+            mismatch = abs(exec_risk_usdt - target_risk_usdt) / target_risk_usdt
+            if mismatch > tol:
+                if rt.settings.entry_block_log:
+                    print(
+                        f"[entry-block] {symbol} risk mismatch too high: "
+                        f"target={target_risk_usdt:.6g} exec={exec_risk_usdt:.6g} "
+                        f"mismatch={mismatch*100:.2f}% > {tol*100:.2f}%",
+                        flush=True,
+                    )
+                return
         try:
             live_order = await asyncio.to_thread(rt.live_exec.market_open, symbol, sig.side.value, qty_live)
         except Exception as exc:
@@ -586,12 +612,7 @@ async def scan_symbol_with_risk(rt: BotRuntime, symbol: str, risk_percent: float
                 avg_px = float(ex_entry)
         if avg_px <= 0:
             avg_px = float(plan.entry)
-        try:
-            m = rt.live_exec._market(symbol)
-            cs = float(m.get("contractSize") or 0.0)
-            contract_size = cs if cs > 0 else None
-        except Exception:
-            contract_size = None
+        contract_size = float(contract_size) if contract_size and contract_size > 0 else None
         plan = OrderPlan(
             side=plan.side,
             qty=float(qty_live),
