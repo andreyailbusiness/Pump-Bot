@@ -309,6 +309,27 @@
       .trade-status-bar strong {
         font-weight: 700;
       }
+      select.stats-period {
+        appearance: none;
+        padding: 8px 14px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: rgba(8, 12, 24, 0.75);
+        color: var(--text);
+        font-family: "DM Sans", sans-serif;
+        font-size: 0.82rem;
+        cursor: pointer;
+      }
+      select.stats-period:focus {
+        outline: none;
+        border-color: rgba(110, 168, 255, 0.45);
+      }
+      .stats-reasons {
+        margin-top: 10px;
+        font-size: 0.78rem;
+        color: var(--muted);
+        line-height: 1.5;
+      }
     </style>
   </head>
   <body>
@@ -365,6 +386,50 @@
               <div class="label">Суммарный uPnL</div>
               <div class="value" id="totalUpnl">—</div>
             </div>
+          </div>
+
+          <h2 style="margin-top: 8px">Статистика</h2>
+          <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px">
+            <span class="muted" style="font-size: 0.82rem">Период</span>
+            <select id="statsPeriod" class="stats-period" aria-label="Период статистики">
+              <option value="">Всё время</option>
+              <option value="7">7 дней</option>
+              <option value="30">30 дней</option>
+              <option value="90">90 дней</option>
+            </select>
+          </div>
+          <div class="kpi-grid">
+            <div class="kpi">
+              <div class="label">Винрейт (полное закрытие)</div>
+              <div class="value" id="statsWinrate">—</div>
+              <div class="muted mono" style="margin-top: 6px; font-size: 0.75rem">
+                побед / пораж · <span id="statsWL">—</span>
+              </div>
+            </div>
+            <div class="kpi">
+              <div class="label">Полных закрытий</div>
+              <div class="value" id="statsFullCloses">—</div>
+            </div>
+            <div class="kpi">
+              <div class="label">Реализованный PnL</div>
+              <div class="value" id="statsRealizedPnl">—</div>
+            </div>
+            <div class="kpi">
+              <div class="label">Profit factor</div>
+              <div class="value" id="statsPF">—</div>
+            </div>
+            <div class="kpi">
+              <div class="label">Частичных фиксаций</div>
+              <div class="value" id="statsPartials">—</div>
+            </div>
+            <div class="kpi">
+              <div class="label">Входов (open)</div>
+              <div class="value" id="statsOpens">—</div>
+            </div>
+          </div>
+          <div class="stats-reasons" id="statsReasons"></div>
+          <div class="footnote" style="margin-top: 6px">
+            Считается по журналу сделок бота в памяти состояния, не по полной истории биржи.
           </div>
 
           <h2 style="margin-top: 8px">Открытые позиции</h2>
@@ -514,6 +579,62 @@
         el("walletUsed").textContent = fmtMoney(w.used);
       }
 
+      function renderStats(s) {
+        const pnlEl = el("statsRealizedPnl");
+        if (!s) {
+          el("statsWinrate").textContent = "—";
+          el("statsWL").textContent = "—";
+          el("statsWinrate").className = "value";
+          el("statsFullCloses").textContent = "—";
+          el("statsRealizedPnl").textContent = "—";
+          pnlEl.className = "value";
+          el("statsPF").textContent = "—";
+          el("statsPartials").textContent = "—";
+          el("statsOpens").textContent = "—";
+          el("statsReasons").textContent = "";
+          return;
+        }
+        const wr = s.winrate;
+        el("statsWinrate").textContent =
+          wr === null || wr === undefined ? "—" : `${(Number(wr) * 100).toFixed(1).replace(/\.0$/, "")}%`;
+        el("statsWL").textContent = `${s.wins ?? "—"} / ${s.losses ?? "—"}`;
+        el("statsWinrate").className = "value";
+
+        el("statsFullCloses").textContent = fmt(s.full_closes);
+        const rp = s.total_realized_pnl;
+        el("statsRealizedPnl").textContent = rp === undefined || rp === null ? "—" : fmtMoney(rp);
+        pnlEl.className = `value ${Number(rp) >= 0 ? "upnl-pos" : "upnl-neg"}`;
+
+        if (s.profit_factor_unbounded) {
+          el("statsPF").textContent = "∞";
+        } else if (s.profit_factor === null || s.profit_factor === undefined) {
+          el("statsPF").textContent = "—";
+        } else {
+          el("statsPF").textContent = Number(s.profit_factor).toLocaleString("ru-RU", {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          });
+        }
+
+        el("statsPartials").textContent = fmt(s.partial_closes);
+        el("statsOpens").textContent = fmt(s.opens);
+
+        const br = s.by_close_reason || {};
+        const parts = Object.entries(br)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `${k}: ${v}`);
+        el("statsReasons").textContent =
+          parts.length > 0 ? `Закрытия по причине: ${parts.join(" · ")}` : "";
+      }
+
+      async function fetchStats() {
+        const period = el("statsPeriod").value;
+        const q = period ? `?since_days=${encodeURIComponent(period)}` : "";
+        const res = await fetch(`/api/stats${q}`, { cache: "no-store" });
+        if (!res.ok) throw new Error(`stats HTTP ${res.status}`);
+        return res.json();
+      }
+
       function renderState(st, source = "live") {
         renderBadges(st);
         const src = source === "cache" ? " · кэш" : "";
@@ -602,9 +723,10 @@
 
       async function load() {
         try {
-          const [resState, resWal] = await Promise.all([
+          const [resState, resWal, resStats] = await Promise.all([
             fetch("/api/state", { cache: "no-store" }),
             fetch("/api/mexc/wallet", { cache: "no-store" }),
+            fetchStats(),
           ]);
           if (!resState.ok) throw new Error(`state HTTP ${resState.status}`);
           const st = await resState.json();
@@ -614,9 +736,10 @@
             w = await resWal.json();
           }
           renderWallet(w);
+          renderStats(resStats);
           localStorage.setItem(
             STATE_CACHE_KEY,
-            JSON.stringify({ ...st, _wallet: w })
+            JSON.stringify({ ...st, _wallet: w, _stats: resStats })
           );
           el("connDot").className = "status-dot ok";
           el("connTxt").textContent = "online";
@@ -627,10 +750,15 @@
               const cached = JSON.parse(raw);
               renderState(cached, "cache");
               renderWallet(cached._wallet || { ok: false });
+              renderStats(cached._stats || null);
             } catch {
               loadCachedState();
+              renderStats(null);
             }
-          } else loadCachedState();
+          } else {
+            loadCachedState();
+            renderStats(null);
+          }
           el("connDot").className = "status-dot bad";
           el("connTxt").textContent = "offline / sleep";
         }
@@ -650,6 +778,15 @@
           await load();
         } catch (e) {
           alert(String(e));
+        }
+      });
+
+      el("statsPeriod").addEventListener("change", async () => {
+        try {
+          const s = await fetchStats();
+          renderStats(s);
+        } catch {
+          renderStats(null);
         }
       });
 
