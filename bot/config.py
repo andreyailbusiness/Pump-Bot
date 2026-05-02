@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     market_type: str = Field(default="futures", alias="MARKET_TYPE")  # futures|spot
 
     top_symbols_limit: int = Field(default=150, alias="TOP_SYMBOLS_LIMIT")
+    # Futures live: filter turnover universe by same dynamic score as backtest --daily-reselect (once per UTC day).
+    live_daily_reselect: bool = Field(default=True, alias="LIVE_DAILY_RESELECT")
+    live_daily_lookback_days: int = Field(default=14, ge=1, le=120, alias="LIVE_DAILY_LOOKBACK_DAYS")
+    live_daily_score_quantile: float = Field(default=0.75, ge=0.0, le=1.0, alias="LIVE_DAILY_SCORE_QUANTILE")
+    # 0 = keep all symbols at/above quantile (same as --daily-top-n 0).
+    live_daily_top_n: int = Field(default=0, ge=0, alias="LIVE_DAILY_TOP_N")
     state_path: str = Field(default="data/state.json", alias="STATE_PATH")
     top_symbols_cache_path: str = Field(default="data/top_symbols.json", alias="TOP_SYMBOLS_CACHE_PATH")
     state_backup_enabled: bool = Field(default=True, alias="STATE_BACKUP_ENABLED")

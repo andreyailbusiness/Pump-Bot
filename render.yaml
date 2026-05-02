@@ -23,6 +23,14 @@ services:
         value: futures
       - key: TOP_SYMBOLS_LIMIT
         value: "120"
+      - key: LIVE_DAILY_RESELECT
+        value: "true"
+      - key: LIVE_DAILY_LOOKBACK_DAYS
+        value: "14"
+      - key: LIVE_DAILY_SCORE_QUANTILE
+        value: "0.75"
+      - key: LIVE_DAILY_TOP_N
+        value: "0"
       - key: STATE_PATH
         value: /var/data/state.json
       - key: TOP_SYMBOLS_CACHE_PATH

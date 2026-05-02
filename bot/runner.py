@@ -4,6 +4,7 @@ import asyncio
 import time
 from dataclasses import replace
 from dataclasses import dataclass
+from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -16,6 +17,7 @@ from .order_manager import OrderManager
 from .risk_manager import OrderPlan, RiskParams, build_order_plan
 from .state import BotState, Position, StateStore
 from .strategy import StrategyParams, generate_signal
+from .symbol_scoring import bars_per_day_for_timeframe, compute_dynamic_score, select_symbols_by_dynamic_score
 from .symbols import TopSymbolsCache, get_futures_candidates_with_turnover, get_top_symbols_by_quote_volume
 from .telegram_notifier import TelegramNotifier
 
@@ -402,6 +404,14 @@ def _last_closed_time(df: pd.DataFrame) -> pd.Timestamp:
     return df.index[-2]
 
 
+def _bar_seconds_for_interval(interval: str) -> int:
+    return {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400}.get(interval, 3600)
+
+
+# UTC-day cache: same dynamic-score universe as backtest --daily-reselect (expensive; refresh once per day).
+_daily_universe_cache: dict[str, date_type | list[str] | None] = {"utc_day": None, "symbols": None}
+
+
 async def fetch_klines(client: MexcClient, symbol: str, interval: str, limit: int) -> pd.DataFrame:
     if isinstance(client, MexcFuturesClient):
         # Futures API uses start/end range with interval names like Min60.
@@ -416,9 +426,84 @@ async def fetch_klines(client: MexcClient, symbol: str, interval: str, limit: in
         }
         fut_interval = interval_map.get(interval, "Min60")
         end_s = int(time.time())
-        start_s = end_s - int(max(limit, 50) * 3600)
+        bar_sec = _bar_seconds_for_interval(interval)
+        start_s = end_s - int(max(limit, 50) * bar_sec)
         return await asyncio.to_thread(client.contract_klines, symbol, fut_interval, start_s, end_s)
     return await asyncio.to_thread(client.klines, symbol, interval, limit)
+
+
+async def _score_one_symbol_for_universe(
+    rt: BotRuntime,
+    symbol: str,
+    kline_limit: int,
+    lookback_days: int,
+    bars_per_day: int,
+) -> tuple[str, float]:
+    try:
+        df = await fetch_klines(rt.client, symbol, rt.settings.timeframe, kline_limit)
+        if df is None or df.shape[0] < 40:
+            return symbol, -1e9
+        tail_n = lookback_days * bars_per_day + 10
+        sub = df.tail(min(int(tail_n), int(df.shape[0])))
+        sc = compute_dynamic_score(sub, bars_per_day=bars_per_day)
+        return symbol, float(sc)
+    except Exception:
+        return symbol, -1e9
+
+
+async def resolve_trade_universe(rt: BotRuntime, raw_symbols: list[str]) -> list[str]:
+    """
+    When LIVE_DAILY_RESELECT: shrink turnover universe using the same score + quantile as backtester
+    (recomputed at most once per UTC day; cached in-process).
+    """
+    if (
+        not bool(rt.settings.live_daily_reselect)
+        or str(rt.settings.market_type) != "futures"
+        or not isinstance(rt.client, MexcFuturesClient)
+    ):
+        return raw_symbols
+    if not raw_symbols:
+        return raw_symbols
+
+    today = datetime.now(timezone.utc).date()
+    cached_day = _daily_universe_cache.get("utc_day")
+    cached_syms = _daily_universe_cache.get("symbols")
+    if cached_day == today and isinstance(cached_syms, list) and cached_syms:
+        return list(cached_syms)
+
+    bars_per_day = bars_per_day_for_timeframe(str(rt.settings.timeframe))
+    lookback = max(1, int(rt.settings.live_daily_lookback_days))
+    kline_limit = min(2000, lookback * bars_per_day + 50)
+
+    sem = asyncio.Semaphore(8)
+
+    async def _run(sym: str) -> tuple[str, float]:
+        async with sem:
+            return await _score_one_symbol_for_universe(rt, sym, kline_limit, lookback, bars_per_day)
+
+    scored = await asyncio.gather(*[_run(s) for s in raw_symbols])
+    picked = select_symbols_by_dynamic_score(
+        list(scored),
+        float(rt.settings.live_daily_score_quantile),
+        int(rt.settings.live_daily_top_n),
+    )
+    if not picked:
+        print(
+            "[universe] daily_reselect: no symbols passed quantile — fallback to turnover list "
+            f"(raw={len(raw_symbols)})",
+            flush=True,
+        )
+        picked = list(raw_symbols)
+
+    _daily_universe_cache["utc_day"] = today
+    _daily_universe_cache["symbols"] = list(picked)
+    print(
+        f"[universe] daily_reselect utc={today} turnover={len(raw_symbols)} selected={len(picked)} "
+        f"lookback_days={lookback} q={float(rt.settings.live_daily_score_quantile):.2f} "
+        f"top_n={int(rt.settings.live_daily_top_n)}",
+        flush=True,
+    )
+    return picked
 
 
 async def scan_symbol(rt: BotRuntime, symbol: str) -> None:
@@ -890,7 +975,7 @@ async def bot_loop(rt: BotRuntime) -> None:
 
             if rt.settings.market_type == "futures" and isinstance(rt.client, MexcFuturesClient):
                 # Keep universe crypto-focused; exclude commodities/index contracts.
-                symbols = [
+                raw_u = [
                     sym
                     for sym, _ in get_futures_candidates_with_turnover(
                         rt.client,
@@ -899,6 +984,7 @@ async def bot_loop(rt: BotRuntime) -> None:
                         include_majors=True,
                     )
                 ]
+                symbols = await resolve_trade_universe(rt, raw_u)
             else:
                 symbols = get_top_symbols_by_quote_volume(
                     rt.client,  # type: ignore[arg-type]

@@ -15,6 +15,7 @@ from .exchange import MexcFuturesClient
 from .indicators import adx as adx_fn, atr as atr_fn
 from .pump_history_selector import rank_symbols_by_pump_history
 from .risk_manager import RiskParams, build_order_plan, tranche_risk_percent
+from .symbol_scoring import bars_per_day_for_timeframe, compute_dynamic_score
 from .strategy import StrategyParams, generate_signal
 from .symbols import (
     TopSymbolsCache,
@@ -67,12 +68,6 @@ def _timeframe_to_mexc_interval(timeframe: str) -> str:
     if timeframe == "15m":
         return "Min15"
     return "Min60"
-
-
-def _bars_per_day(timeframe: str) -> int:
-    if timeframe == "15m":
-        return 96
-    return 24
 
 
 def fetch_futures_history(client: MexcFuturesClient, symbol: str, days: int, timeframe: str = "1h") -> pd.DataFrame:
@@ -576,27 +571,6 @@ def backtest_symbol(
     return BtResult(symbol, trades, wins, losses, roi, max_dd, profit_factor, avg_trade_pnl, sharpe_trades, trades_per_month, monthly_pnl)
 
 
-def _compute_dynamic_score(sub: pd.DataFrame, bars_per_day: int = 24) -> float:
-    if sub.shape[0] < max(120, bars_per_day * 5):
-        return -1e9
-    daily_close = sub["close"].resample("1D").last().dropna()
-    daily_ret = daily_close.pct_change().dropna()
-    pump_count = float((daily_ret > 0.08).sum())
-    prev_close = sub["close"].shift(1)
-    tr = pd.concat(
-        [
-            (sub["high"] - sub["low"]).abs(),
-            (sub["high"] - prev_close).abs(),
-            (sub["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr_pct = float((tr.rolling(bars_per_day).mean() / sub["close"]).dropna().tail(bars_per_day).mean() or 0.0)
-    brk = float(sub["close"].pct_change(bars_per_day).dropna().tail(bars_per_day * 3).max() or 0.0)
-    # Local score (without cross-sectional normalization): enough for ranking each day.
-    return 2.0 * pump_count + 80.0 * atr_pct + 10.0 * brk
-
-
 def backtest_portfolio_daily_reselect(
     symbol_dfs: dict[str, pd.DataFrame],
     strat: StrategyParams,
@@ -676,7 +650,7 @@ def backtest_portfolio_daily_reselect(
                 sub = df[df.index <= ts].tail(lookback_days * bars_per_day + 10)
                 if sub.shape[0] < 120:
                     continue
-                score = _compute_dynamic_score(sub, bars_per_day=bars_per_day)
+                score = compute_dynamic_score(sub, bars_per_day=bars_per_day)
                 scored.append((sym, score))
             scored.sort(key=lambda x: x[1], reverse=True)
             if scored:
@@ -1117,7 +1091,7 @@ def main() -> None:
         help="Days of history before --since for EMA/ATR (default 45).",
     )
     args = ap.parse_args()
-    bars_per_day = _bars_per_day(str(args.timeframe))
+    bars_per_day = bars_per_day_for_timeframe(str(args.timeframe))
 
     if args.since.strip():
         since_d = _parse_iso_day_utc(args.since)
